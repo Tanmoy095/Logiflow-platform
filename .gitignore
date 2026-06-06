@@ -1,0 +1,6 @@
+.env
+# Optional: common ignores
+__pycache__/
+node_modules/
+dist/
+.venv/
