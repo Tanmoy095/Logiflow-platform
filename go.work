@@ -1,0 +1,8 @@
+//Go workspace ties multiple modules together so platform packages (internal/observability) can be shared across all services. It prevents dependency drift and enables atomic cross‑service refactoring.
+
+// go.work
+go 1.25.1
+
+use (
+    .
+)

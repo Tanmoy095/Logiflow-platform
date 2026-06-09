@@ -4,3 +4,26 @@ __pycache__/
 node_modules/
 dist/
 .venv/
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin
+/dist
+
+# Test binary
+*.test
+
+# Go workspace
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
