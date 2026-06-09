@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Tanmoy095/LogiFlow-AI-Powered-Operational-Intelligence/internal/observability"
+	"github.com/Tanmoy095/LogiFlow-Platform/internal/observability"
 )
 
 func main() {
