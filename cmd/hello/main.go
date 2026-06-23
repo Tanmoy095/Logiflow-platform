@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,10 +23,15 @@ func main() {
 		}
 	}
 
-	serviceName := "hello"
-	if s := os.Getenv("SERVICE_NAME"); s != "" {
-		serviceName = s
+	serviceName := os.Getenv("SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "hello"
 	}
+
+	// 2. Log startup info (useful for debugging: PID, hostname)
+	pid := os.Getpid()
+	hostname, _ := os.Hostname()
+	log.Printf("%s starting: PID=%d hostname=%s port=%s", serviceName, pid, hostname, port)
 
 	// ---- Bootstrap Observability ----
 	// Using your centralized package instead of manual slog setup
@@ -90,23 +96,22 @@ func main() {
 		os.Exit(1)
 
 	case <-ctx.Done():
-		obs.Logger.Info("shutdown signal received, draining connections...")
+		// Signal received, begin graceful shutdown
+		log.Printf("%s received shutdown signal, draining...", serviceName)
+		obs.Logger.Info("shutdown initiated, setting readiness to false")
 
-		// Set readiness to false / simulate traffic drain time if needed in k8s
-		obs.Logger.Info("readiness set to false")
+		// Give Kubernetes time to stop sending traffic (optional)
+		// If you have a preStop hook, you can add a small delay here.
+		// time.Sleep(2 * time.Second)
 
-		// Create a context with timeout for the shutdown process
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// Attempt graceful shutdown
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			obs.Logger.Error("forced shutdown triggered", "error", err)
-			// Force close the server if it won't shut down gracefully
-			_ = srv.Close()
+			log.Printf("forced shutdown: %v", err)
 		}
+		log.Printf("%s stopped cleanly", serviceName)
 	}
-
+	obs.Logger.Info("service stopped")
 	obs.Logger.Info("service stopped cleanly")
-	obs.Logger.Info("goodbye")
 }

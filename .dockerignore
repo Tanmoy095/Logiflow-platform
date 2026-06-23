@@ -1,8 +1,10 @@
 .git
-tmp/
 *.log
-coverage.*
+tmp/
+coverage
+.env
 *.env
-*.out
-bin/
-build/
+Dockerfile*
+docker-compose*
+.vscode
+.idea

@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# Hello Service — Multi‑stage build, scratch runtime, non‑root.
+# HEALTHCHECK skipped because scratch has no shell; Kubernetes HTTP probes replace it.
+# Base image trade‑off: scratch selected for minimal attack surface.
+
+# ===== Stage 1: Builder =====
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /workspace
+
+# Copy dependency files first to cache module downloads
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# Copy the rest of the source
+COPY . .
+
+# Build a static binary with no CGO, stripped debug symbols
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /hello ./cmd/hello
+
+# ===== Stage 2: Runtime =====
+FROM scratch
+
+# CA certificates from builder (needed for HTTPS calls)
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# The static binary
+COPY --from=builder /hello /hello
+
+# Run as non-root
+USER 1000
+
+EXPOSE 8080
+ENTRYPOINT ["/hello"]
