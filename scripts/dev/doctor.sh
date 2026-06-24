@@ -98,27 +98,39 @@ for var in "${REQUIRED_VARS[@]}"; do
         warn "env var $var is not set (using default in code if any)"
     else
         pass "env var $var = ${!var}"
+        #KuberNetes compliance check 
+
+        if ["$var" == "SERVICE_NAME" ]; then
+            if [[ ! "$SERVICE_NAME" =~ ^[a-z0-9-]+$ ]]; then
+                fail "SERVICE_NAME must be lowercase letters, numbers, and hyphens only (kubernetes compliant)"
+            fi
+        fi
     fi
 done
 
-# Port availability check – port 8080 (the hello service)
-# Using lsof (Linux/macOS) or ss for Linux
-if command -v lsof &>/dev/null; then
-    if lsof -i :8080 -sTCP:LISTEN &>/dev/null; then
-        fail "Port 8080 is already in use – stop the conflicting process"
-    else
-        pass "port 8080 available"
-    fi
-elif command -v ss &>/dev/null; then
-    if ss -tlnp | grep -q ':8080 '; then
-        fail "Port 8080 is already in use"
-    else
-        pass "port 8080 available"
-    fi
-else
-    warn "Cannot check port 8080 (install lsof or ss)"
-fi
+# Check if the target port is available
+check_target_port() {
 
+    local target_port="${1:-8080}"  # default to 8080 if not provided
+    if command -v lsof &>/dev/null; then
+        if lsof -i :"$target_port" -sTCP:LISTEN &>/dev/null; then
+            fail "Port $target_port is in use – stop the process using it"
+        else
+            pass "Port $target_port is available"
+        fi
+    elif command -v ss &>/dev/null; then
+        if ss -ltn | awk '{print $4}' | grep -q ":$target_port$"; then
+            fail "Port $target_port is in use – stop the process using it"
+        else
+            pass "Port $target_port is available"
+        fi
+    else
+        warn "Neither lsof nor ss found – cannot check port availability"
+    fi
+}
+
+#call the function to check port 8080
+check_target_port 8080
 # ------------------------------------------------------------
 # 4. DISK SPACE (basic) – enough room to build
 # ------------------------------------------------------------
