@@ -11,9 +11,22 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+echo "=== LogiFlow Doctor ==="
+
+
 pass() { echo -e "${GREEN}✓${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+
+#toolchain check function
+check_cmd() {
+    local cmd=$1
+    if command -v "$cmd" &>/dev/null; then
+        pass "$cmd is available"
+    else
+        fail "$cmd not found"
+    fi
+}
 
 echo "=== LogiFlow doctor.sh ==="
 
@@ -22,6 +35,10 @@ echo "=== LogiFlow doctor.sh ==="
 # ------------------------------------------------------------
 echo "[toolchain]"
 
+check_cmd go
+check_cmd git
+check_cmd docker
+echo "All checks passed."
 # Go check
 if command -v go &>/dev/null; then
     GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
