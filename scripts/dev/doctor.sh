@@ -1,163 +1,177 @@
 #!/usr/bin/env bash
 # doctor.sh – LogiFlow environment pre-flight check
 # Run with: make doctor or ./scripts/dev/doctor.sh
-# Fails fast if any core assumption is broken.
+# Validates all assumptions a developer needs before starting work.
+# - Hard failures (exit 1) = Missing critical dependencies (stops the script immediately).
+# - Warnings = Project configuration issues (alerts the user but allows the script to finish).
 
-set -euo pipefail   # Exit on error, undefined variable, or pipe failure
+set -euo pipefail   # Exit immediately on error, undefined variable, or pipe failure
 
-# ---- Colors (nice output) ----
+# ------------------------------------------------------------
+# Formatting & Colors
+# ------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo "=== LogiFlow Doctor ==="
-
-
 pass() { echo -e "${GREEN}✓${NC} $1"; }
-fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
+fail() { echo -e "${RED}✗${NC} $1"; exit 1; }  # exit 1 kills the script immediately
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 
-#toolchain check function
-check_cmd() {
-    local cmd=$1
-    if command -v "$cmd" &>/dev/null; then
-        pass "$cmd is available"
+# ------------------------------------------------------------
+# 1. Toolchain & Daemons (Hard Failures)
+# ------------------------------------------------------------
+
+check_go() {
+    if ! command -v go &>/dev/null; then
+        fail "Go is not installed"
+    fi
+    local version
+    version=$(go version | awk '{print $3}' | sed 's/go//')
+    # Checks if version is NOT 1.22+ or 1.30+
+    if [[ "$version" != 1.2[2-9]* ]] && [[ "$version" != 1.[3-9]* ]]; then
+        fail "Go version $version – need ≥ 1.22"
+    fi
+    pass "Go $version"
+}
+
+check_git() {
+    command -v git &>/dev/null || fail "Git is not installed"
+    pass "Git $(git --version | awk '{print $3}')"
+}
+
+check_docker() {
+    command -v docker &>/dev/null || fail "Docker is not installed"
+    pass "Docker $(docker --version | awk '{print $3}' | sed 's/,//')"
+}
+
+check_docker_daemon() {
+    if ! docker info &>/dev/null; then
+        fail "Docker daemon is not running. Start Docker Desktop."
+    fi
+    pass "Docker daemon running"
+}
+check_kind() {
+    command -v kind &>/dev/null || fail "Kind is not installed"
+    pass "Kind $(kind version -q)"
+}
+
+check_helm() {
+    command -v helm &>/dev/null || fail "Helm is not installed"
+    pass "Helm $(helm version --short | head -1)"
+}
+
+check_make() {
+    command -v make &>/dev/null || fail "Make is not installed"
+    pass "Make found"
+}
+
+check_git_repo() {
+    # Must be in a git repo for the branch/clean checks to work
+    if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+        fail "Not inside a Git repository"
+    fi
+    pass "Inside Git repository"
+}
+
+# ------------------------------------------------------------
+# 2. Environment & State (Warnings & Project Config)
+# ------------------------------------------------------------
+
+check_git_branch() {
+    local branch
+    branch=$(git branch --show-current)
+    if [[ "$branch" == "main" || "$branch" == "master" ]]; then
+        warn "On protected branch '$branch' – consider using a feature branch"
     else
-        fail "$cmd not found"
+        pass "Branch: $branch"
     fi
 }
 
-echo "=== LogiFlow doctor.sh ==="
-
-# ------------------------------------------------------------
-# 1. TOOLCHAIN CHECKS – are required CLIs present?
-# ------------------------------------------------------------
-echo "[toolchain]"
-
-check_cmd go
-check_cmd git
-check_cmd docker
-echo "All checks passed."
-# Go check
-if command -v go &>/dev/null; then
-    GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-    REQUIRED_MAJOR=1
-REQUIRED_MINOR=22
-
-GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
-GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
-
-if (( GO_MAJOR > REQUIRED_MAJOR )) || (( GO_MAJOR == REQUIRED_MAJOR && GO_MINOR >= REQUIRED_MINOR )); then
-    pass "Go $GO_VERSION"
-else
-    fail "Go version $GO_VERSION – need ${REQUIRED_MAJOR}.${REQUIRED_MINOR}+"
-fi
-else
-    fail "go is not installed"
-fi
-
-# Docker check
-if command -v docker &>/dev/null; then
-    pass "docker CLI found"
-else
-    fail "docker CLI not found"
-fi
-
-# Git check (you already use Git)
-command -v git &>/dev/null && pass "git CLI found" || fail "git not found"
-
-# ------------------------------------------------------------
-# 2. RUNTIME DAEMONS – are the engines running?
-# ------------------------------------------------------------
-echo "[daemons]"
-
-# Docker daemon must be alive
-if docker info &>/dev/null; then
-    pass "Docker daemon running"
-else
-    fail "Docker daemon is not running – start Docker Desktop"
-fi
-
-# (Optional) Kubernetes check – if kubectl is installed, check cluster
-if command -v kubectl &>/dev/null; then
-    if kubectl cluster-info &>/dev/null; then
-        pass "Kubernetes cluster reachable"
+check_git_clean() {
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        warn "Working tree has uncommitted changes"
     else
-        warn "kubectl installed but no cluster reachable (ignore if not using K8s yet)"
+        pass "Working tree clean"
     fi
-fi
+}
 
-# ------------------------------------------------------------
-# 3. ENVIRONMENT & PROJECT STATE – is the repo in good shape?
-# ------------------------------------------------------------
-echo "[environment]"
-
-# Current branch
-CURRENT_BRANCH=$(git branch --show-current)
-if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
-    warn "You are on '$CURRENT_BRANCH' – consider using a feature branch"
-else
-    pass "branch '$CURRENT_BRANCH'"
-fi
-
-# Dirty worktree (uncommitted changes)
-if git diff --quiet && git diff --cached --quiet; then
-    pass "working tree clean"
-else
-    warn "uncommitted changes present"
-fi
-
-# Check required environment variables (customize for your services)
-REQUIRED_VARS=("PORT" "SERVICE_NAME")   # add more as your project grows
-for var in "${REQUIRED_VARS[@]}"; do
-    if [ -z "${!var:-}" ]; then
-        warn "env var $var is not set (using default in code if any)"
+check_port() {
+    local port=${1:-8080}
+    # First try lsof
+    if command -v lsof &>/dev/null; then
+        if lsof -i :"$port" -sTCP:LISTEN &>/dev/null; then
+            fail "Port $port is in use – stop the process using it"
+        else
+            pass "Port $port available"
+        fi
+    # Fallback to ss if lsof is missing
+    elif command -v ss &>/dev/null; then
+        if ss -ltn | awk '{print $4}' | grep -q ":$port$"; then
+            fail "Port $port is in use – stop the process using it"
+        else
+            pass "Port $port available"
+        fi
     else
-        pass "env var $var = ${!var}"
-        #KuberNetes compliance check 
+        warn "Cannot check port availability (neither lsof nor ss found)"
+    fi
+}
 
-        if ["$var" == "SERVICE_NAME" ]; then
-            if [[ ! "$SERVICE_NAME" =~ ^[a-z0-9-]+$ ]]; then
-                fail "SERVICE_NAME must be lowercase letters, numbers, and hyphens only (kubernetes compliant)"
+check_env_vars() {
+    for var in PORT SERVICE_NAME; do
+        if [ -z "${!var:-}" ]; then
+            # We warn here so the dev knows, but we don't return an error code 
+            # to prevent 'set -e' from crashing the script (e.g. make Error 1).
+            warn "Environment variable $var is not set (using defaults)"
+        else
+            pass "Env $var = ${!var}"
+            
+            # Kubernetes compliance check: SERVICE_NAME must be strictly formatted
+            if [ "$var" == "SERVICE_NAME" ]; then
+                if [[ ! "${!var}" =~ ^[a-z0-9-]+$ ]]; then
+                    fail "SERVICE_NAME must be lowercase letters, numbers, and hyphens only (K8s compliant)"
+                fi
             fi
         fi
-    fi
-done
+    done
+}
 
-# Check if the target port is available
-check_target_port() {
-
-    local target_port="${1:-8080}"  # default to 8080 if not provided
-    if command -v lsof &>/dev/null; then
-        if lsof -i :"$target_port" -sTCP:LISTEN &>/dev/null; then
-            fail "Port $target_port is in use – stop the process using it"
-        else
-            pass "Port $target_port is available"
-        fi
-    elif command -v ss &>/dev/null; then
-        if ss -ltn | awk '{print $4}' | grep -q ":$target_port$"; then
-            fail "Port $target_port is in use – stop the process using it"
-        else
-            pass "Port $target_port is available"
-        fi
+check_disk_space() {
+    local available_kb
+    local available_gb
+    available_kb=$(df . | tail -1 | awk '{print $4}')
+    available_gb=$((available_kb / 1024 / 1024))
+    
+    if [ "$available_gb" -lt 1 ]; then
+        warn "Less than 1 GB free disk space – builds may fail"
     else
-        warn "Neither lsof nor ss found – cannot check port availability"
+        pass "Disk space ~${available_gb} GB available"
     fi
 }
 
-#call the function to check port 8080
-check_target_port 8080
 # ------------------------------------------------------------
-# 4. DISK SPACE (basic) – enough room to build
+# 3. Main Execution
 # ------------------------------------------------------------
-echo "[resources]"
-AVAILABLE_KB=$(df . | tail -1 | awk '{print $4}')
-AVAILABLE_GB=$((AVAILABLE_KB / 1024 / 1024))
-if [ "$AVAILABLE_GB" -lt 1 ]; then
-    warn "Less than 1 GB free disk space – builds may fail"
-else
-    pass "disk space ~${AVAILABLE_GB} GB available"
-fi
+echo "=== LogiFlow Doctor ==="
+echo ""
 
-echo -e "\n${GREEN}All essential checks passed.${NC} You're ready to build!"
+# Run hard failures first (will kill script instantly if they fail)
+check_go
+check_git
+check_docker
+check_docker_daemon
+check_make
+check_git_repo
+check_kind
+check_helm
+
+# Run environment checks (will warn, but allow script to continue)
+check_port 8080
+check_env_vars
+check_git_branch
+check_git_clean
+check_disk_space
+
+echo ""
+echo -e "${GREEN}=== All checks completed successfully. You're ready to build! ===${NC}"

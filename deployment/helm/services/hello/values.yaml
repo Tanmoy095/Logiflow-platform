@@ -1,0 +1,14 @@
+# Default values for the hello service.
+replicaCount: 1
+image:
+  repository: logiflow/hello
+  tag: local
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+  targetPort: 8080
+
+# Labels and selector will use "hello" as the app name
+nameOverride: ""
+fullnameOverride: ""
