@@ -1,0 +1,30 @@
+# =========================================================================
+# LogiFlow Kind Cluster Configuration
+# =========================================================================
+# Purpose:
+#   Defines a reproducible local Kubernetes cluster using Kind.
+#   The cluster runs entirely in Docker containers.
+#
+# Usage:
+#   kind create cluster --name logiflow-dev --config dev/kind/kind-config.yaml
+#
+# Note on extraPortMappings:
+#   The hostPort 8080 -> containerPort 80 mapping is reserved for a future
+#   Ingress controller. Currently, we use `kubectl port-forward` to access
+#   services, which is more secure and production-like.
+# =========================================================================
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 8080
+    protocol: TCP
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
