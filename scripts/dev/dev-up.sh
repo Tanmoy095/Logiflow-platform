@@ -3,38 +3,42 @@
 # LogiFlow dev-up.sh — One Command Local Development Environment
 # =========================================================================
 # Usage:
-#   ./scripts/dev/dev-up.sh
+#   SERVICE=query-api ./scripts/dev/dev-up.sh
+#   SERVICE=query-api make dev-up          # recommended
 #
-# Design Principles:
-#   - Idempotent: safe to run multiple times.
-#   - Fail fast: any error stops the pipeline.
-#   - Self-documenting: structured logging for humans and AI agents.
-#   - Single responsibility: each function does one thing.
-#
-# Architecture:
-#   validate_environment → ensure_cluster → build_image → load_image
-#   → lint_chart → template_chart → deploy_release → wait_for_readiness
-#   → start_port_forward → verify_health
-#
-# Connections to Kubernetes:
-#   - Kind creates a local cluster with kubelet, API server, etc.
-#   - Helm installs a Deployment (creates Pods) and a Service (ClusterIP).
-#   - The readiness probe in the Deployment determines when the pod joins
-#     the Service endpoints, enabling kube-proxy to route traffic.
-#   - Port-forward tunnels localhost:8080 to the Service's ClusterIP.
+# Design:
+#   - Delegates build/lint/template/deploy to the Makefile.
+#   - Owns cluster creation, image loading, readiness checks, port-forward,
+#     and health verification.
+#   - Reads SERVICE from environment (default: hello) to support multi‑service.
 # =========================================================================
 
 set -euo pipefail
 
-# --- Configuration (adjust to your project) ---
+# ----------------------------------------------------------------------
+# Cluster Configuration (not covered by Makefile)
+# ----------------------------------------------------------------------
 readonly KIND_CLUSTER_NAME="logiflow-dev"
 readonly KIND_CONFIG="dev/kind/kind-config.yaml"
-readonly APP_IMAGE="hello:local"
-readonly CHART_PATH="deployment/helm/services/hello"
+
+# ----------------------------------------------------------------------
+# Service Identity (driven by SERVICE env var, like Makefile)
+# ----------------------------------------------------------------------
+SERVICE_NAME="${SERVICE:-hello}"          # read $SERVICE, default 'hello'
+readonly SERVICE_NAME
+readonly IMAGE_TAG="local"
+readonly APP_IMAGE="logiflow/${SERVICE_NAME}:${IMAGE_TAG}"
+
+# ----------------------------------------------------------------------
+# Kubernetes & network
+# ----------------------------------------------------------------------
 readonly NAMESPACE="logiflow"
-readonly SERVICE_NAME="hello"
 readonly LOCAL_PORT="8080"
 readonly SERVICE_PORT="8080"
+
+# ----------------------------------------------------------------------
+# Health check
+# ----------------------------------------------------------------------
 readonly HEALTH_ENDPOINT="/healthz"
 readonly MAX_RETRIES=10
 readonly RETRY_DELAY=2
@@ -60,7 +64,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ======================================================================
-# 1. Validate local toolchain (doctor-lite)
+# 1. Validate local toolchain (no jq dependency)
 # ======================================================================
 validate_environment() {
     log_info "Validating environment..."
@@ -70,8 +74,14 @@ validate_environment() {
             log_fail "Missing command: $cmd. Please install it."
         fi
     done
-    local docker_ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
-    log_ok "docker ${docker_ver}, kind $(kind version -q), kubectl $(kubectl version --client -o json | jq -r .clientVersion.gitVersion), helm $(helm version --short)"
+
+    local docker_ver
+    docker_ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
+
+    local kubectl_ver
+    kubectl_ver=$(kubectl version --client --short 2>/dev/null || kubectl version --client)
+
+    log_ok "docker ${docker_ver}, kind $(kind version -q), ${kubectl_ver}, helm $(helm version --short)"
 }
 
 # ======================================================================
@@ -89,15 +99,11 @@ ensure_cluster() {
 }
 
 # ======================================================================
-# 3. Build Docker image (delegates to Makefile when possible)
+# 3. Build image (delegates to Makefile – inherits SERVICE from env)
 # ======================================================================
 build_image() {
-    log_info "Building Docker image '${APP_IMAGE}'..."
-    if [ -f Makefile ] && grep -q '^build:' Makefile; then
-        make build IMAGE="$APP_IMAGE"
-    else
-        docker build -t "$APP_IMAGE" .
-    fi
+    log_info "Building Docker image via Makefile..."
+    make build
     log_ok "Image '${APP_IMAGE}' built"
 }
 
@@ -111,64 +117,59 @@ load_image() {
 }
 
 # ======================================================================
-# 5. Helm lint – catch YAML/syntax errors before deployment
+# 5. Helm lint (delegates to Makefile)
 # ======================================================================
 lint_chart() {
-    log_info "Linting Helm chart at '${CHART_PATH}'..."
-    helm lint "$CHART_PATH" --namespace "$NAMESPACE" > /dev/null
+    log_info "Linting Helm chart via Makefile..."
+    make lint
     log_ok "Chart lint passed"
 }
 
 # ======================================================================
-# 6. Helm template – dry-run to verify rendered YAML
+# 6. Helm template (delegates to Makefile)
 # ======================================================================
 template_chart() {
-    log_info "Templating Helm chart..."
-    helm template "$SERVICE_NAME" "$CHART_PATH" \
-        --namespace "$NAMESPACE" \
-        --set image.repository="hello" \
-        --set image.tag="local" \
-        --set service.port="$SERVICE_PORT" > /dev/null
+    log_info "Templating Helm chart via Makefile..."
+    make template
     log_ok "Template rendered successfully"
 }
 
 # ======================================================================
-# 7. Deploy/upgrade the Helm release (idempotent)
+# 7. Deploy release (delegates to Makefile)
 # ======================================================================
 deploy_release() {
-    log_info "Deploying Helm release '${SERVICE_NAME}' in namespace '${NAMESPACE}'..."
-    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-    helm upgrade --install "$SERVICE_NAME" "$CHART_PATH" \
-        --namespace "$NAMESPACE" \
-        --set image.repository="hello" \
-        --set image.tag="local" \
-        --set service.port="$SERVICE_PORT" \
-        --wait --timeout 60s
-    log_ok "Release '${SERVICE_NAME}' deployed successfully"
+    log_info "Deploying Helm release via Makefile..."
+    make deploy
+    log_ok "Release '${SERVICE_NAME}' deployed"
 }
 
 # ======================================================================
-# 8. Wait for pod readiness (depends on readiness probe)
+# 8. Wait for pod readiness
 # ======================================================================
 wait_for_readiness() {
-    log_info "Waiting for pod with label app.kubernetes.io/name=hello to be ready..."
+    log_info "Waiting for pod with label app.kubernetes.io/name=${SERVICE_NAME}..."
     if ! kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/name=hello \
-        -n "$NAMESPACE" --timeout=120s; then
+        -l "app.kubernetes.io/name=${SERVICE_NAME}" \
+        -n "$NAMESPACE" \
+        --timeout=120s; then
         log_fail "Pod readiness timeout. Debug: kubectl describe pod, kubectl logs, kubectl get events"
     fi
-    local pod=$(kubectl get pods -l app.kubernetes.io/name=hello -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}')
+    local pod=$(
+        kubectl get pods \
+            -l "app.kubernetes.io/name=${SERVICE_NAME}" \
+            -n "$NAMESPACE" \
+            -o jsonpath='{.items[0].metadata.name}'
+    )
     log_ok "Pod '${pod}' is ready"
 }
 
 # ======================================================================
-# 9. Start port-forward to access Service on localhost
+# 9. Start port-forward
 # ======================================================================
 start_port_forward() {
     log_info "Starting port-forward: localhost:${LOCAL_PORT} -> svc/${SERVICE_NAME}:${SERVICE_PORT} in ${NAMESPACE}..."
     kubectl port-forward "svc/$SERVICE_NAME" "$LOCAL_PORT:$SERVICE_PORT" -n "$NAMESPACE" &
     PF_PID=$!
-    # Give it a moment to establish
     sleep 1
     if ! kill -0 $PF_PID 2>/dev/null; then
         log_fail "Port-forward failed to start"
@@ -196,7 +197,7 @@ verify_health() {
 }
 
 # ======================================================================
-# Main execution
+# Main
 # ======================================================================
 main() {
     echo -e "${BOLD}LogiFlow Dev Environment – one command to rule them all${NC}\n"
@@ -215,7 +216,6 @@ main() {
     echo -e "${GREEN}${BOLD}Environment Ready 🚀${NC}"
     echo -e "Service accessible at ${BOLD}http://localhost:${LOCAL_PORT}${HEALTH_ENDPOINT}${NC}"
     echo "Press Ctrl+C to stop port-forward and exit."
-    # Keep script alive so port-forward remains usable
     wait $PF_PID
 }
 

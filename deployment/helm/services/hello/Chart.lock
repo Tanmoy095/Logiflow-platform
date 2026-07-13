@@ -1,0 +1,6 @@
+dependencies:
+- name: logiflow-service
+  repository: file://../../library/logiflow-service
+  version: 0.1.0
+digest: sha256:25bcfc2cd1d1f294f522cdcd453d4ff54d3a19a7df49b4d15fae436f31200c4f
+generated: "2026-07-14T03:58:04.6104225+06:00"

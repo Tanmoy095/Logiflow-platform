@@ -1,72 +1,35 @@
-# 1. API version and Kind – tells Kubernetes what we're creating
 apiVersion: apps/v1
 kind: Deployment
-
-# 2. Metadata – the name and labels of this Deployment object
 metadata:
-  name: hello
+  name: {{ include "logiflow.name" . }}
   labels:
-    app: hello # label on the Deployment itself
-
-# 3. Spec – the desired state
+    {{- include "logiflow.labels" . | nindent 4 }}
 spec:
-  # How many identical Pods do we want?
-  replicas: 2
-
-  # Which Pods belong to this Deployment?
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: hello # must match the pod template labels
-
-  # How to update Pods when the template changes?
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1 # allow one extra pod during update
-      maxUnavailable: 0 # never let total ready pods drop below replicas
-
-  # 4. Pod Template – the blueprint for every pod
+      {{- include "logiflow.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: hello # exactly the same as selector and Service selector
+        {{- include "logiflow.selectorLabels" . | nindent 8 }}
     spec:
-      # How long Kubernetes waits after SIGTERM before force‑killing
-      terminationGracePeriodSeconds: 30
-
+      securityContext:
+        {{- include "logiflow.podSecurityContext" . | nindent 8 }}
       containers:
-        - name: hello
-          image: logiflow/hello:local
-          imagePullPolicy: IfNotPresent # use local image in Kind
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8080
-
-          # Resource requests (guaranteed) and limits (ceiling)
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "128Mi"
-
-          # Security – enforce non‑root, prevent privilege escalation
+            - containerPort: {{ .Values.service.port }}
           securityContext:
-            runAsUser: 1000
-            allowPrivilegeEscalation: false
-
-          # Liveness probe – is the process alive?
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-
-          # Readiness probe – is the pod ready to serve traffic?
+            {{- include "logiflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- include "logiflow.resources" . | nindent 12 }}
           readinessProbe:
-            httpGet:
-              path: /ready
-              port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 5
+            {{- include "logiflow.readinessProbe" . | nindent 12 }}
+          livenessProbe:
+            {{- include "logiflow.livenessProbe" . | nindent 12 }}
+          env:
+            - name: HELLO_MSG
+              value: {{ .Values.config.helloMsg | quote }}

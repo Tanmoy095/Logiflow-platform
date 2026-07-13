@@ -1,0 +1,8 @@
+#deployment/helm/library/logiflow-service/Chart.yaml
+
+
+apiVersion: v2
+name: logiflow-service
+description: Library chart – provides standard labels, probes, security contexts, and resources for all LogiFlow microservices
+type: library           # This means it cannot be installed alone; it's only for sharing templates
+version: 0.1.0
