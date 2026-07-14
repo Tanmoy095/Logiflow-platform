@@ -34,18 +34,23 @@ fsGroup: 1000
 
 {{/*
 Container-level security context – hardens every container
+Now includes seccompProfile for runtime defense.
 */}}
 {{- define "logiflow.containerSecurityContext" -}}
 allowPrivilegeEscalation: false
-readOnlyRootFilesystem: true   # Enforced globally from here
+readOnlyRootFilesystem: true
+runAsNonRoot: true
 runAsUser: 1000
 capabilities:
   drop:
     - ALL
+seccompProfile:
+  type: RuntimeDefault
 {{- end }}
 
 {{/*
 Default resource requests and limits – prevents noisy neighbours
+Uses values.yaml overrides when present, sensible defaults otherwise.
 */}}
 {{- define "logiflow.resources" -}}
 requests:
@@ -57,7 +62,7 @@ limits:
 {{- end }}
 
 {{/*
-Readiness probe – ensures pod is removed from Service if not ready
+Readiness probe – removes pod from Service if not ready
 */}}
 {{- define "logiflow.readinessProbe" -}}
 httpGet:
