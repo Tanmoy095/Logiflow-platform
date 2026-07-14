@@ -2,9 +2,12 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-28
-- **Deciders:** LogiFlow Platform Team
 - **Supersedes:** None
 - **Relates to:** ADR-002 – Service Networking, ADR-003 – Deployment Strategy
+- **Author:** Aunmoy Dey Tanmoy  
+- **Decision Owner:** Aunmoy Dey Tanmoy 
+- **Project:** LogiFlow  
+
 
 ---
 

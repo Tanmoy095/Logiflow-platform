@@ -2,8 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-26
-- **Deciders:** LogiFlow Platform Team
 - **Supersedes:** None
+- **Author:** Aunmoy Dey Tanmoy  
+- **Decision Owner:** Aunmoy Dey Tanmoy  
+- **Status:** Accepted  
+- **Project:** LogiFlow  
 
 ---
 

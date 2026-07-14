@@ -2,9 +2,12 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-27
-- **Deciders:** LogiFlow Platform Team
 - **Supersedes:** None
 - **Relates to:** ADR-002 – Service Networking
+- **Author:** Aunmoy Dey Tanmoy  
+- **Decision Owner:** Aunmoy Dey Tanmoy  
+- **Project:** LogiFlow  
+
 
 ---
 
