@@ -27,3 +27,6 @@ go.work.sum
 # OS files
 .DS_Store
 Thumbs.db
+# Logs
+*.log
+deployment/helm/services/stream-ingestion/values-prod-secrets.yaml

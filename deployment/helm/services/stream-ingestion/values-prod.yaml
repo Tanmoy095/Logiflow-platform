@@ -1,0 +1,16 @@
+# values-prod.yaml – overrides for production
+
+replicaCount: 3                           # highest replica count
+
+image:
+  tag: 1.0.0                              # immutable production tag
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 400m                             # more headroom for production traffic
+    memory: 512Mi
+
+config:
+  kafkaBroker: "kafka-prod:9092"          # production Kafka cluster
+  inputTopic: "events-raw"                # production topic (name may be the same, but broker differs)

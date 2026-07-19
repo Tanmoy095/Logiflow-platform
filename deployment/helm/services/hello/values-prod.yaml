@@ -1,0 +1,16 @@
+# values-prod.yaml – overrides for production
+#DEPLOYMENT/HELM/SERVICES/HELLO/VALUES-PROD.YAML
+
+replicaCount: 3
+
+image:
+  tag: 1.0.0            # immutable, never "latest"
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 400m           # more headroom for production traffic
+    memory: 512Mi
+
+config:
+  helloMsg: "Hello from Production"

@@ -1,0 +1,11 @@
+# This is a Helm chart for the stream-ingestion service of LogiFlow.
+#deployment/helm/services/stream-ingestion/Chart.yaml
+apiVersion: v2
+name: stream-ingestion
+description: Real‑time stream ingestion service for LogiFlow
+version: 0.1.0
+
+dependencies:
+  - name: logiflow-service
+    version: "0.1.0"
+    repository: "file://../../library/logiflow-service"

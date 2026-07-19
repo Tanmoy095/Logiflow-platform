@@ -1,4 +1,4 @@
-#deployment/helm/services/hello/values.yaml
+#deployment/helm/services/hello/values-dev.yaml
 # Hello Service – Default Values
 # ------------------------------------------------------------
 
@@ -19,8 +19,8 @@ service:
 # Probe paths (can be overridden per service)
 probes:
   readiness:
-    path: /healthz
-    initialDelaySeconds: 3
+    path: /healthz 
+    initialDelaySeconds: 3 #this is the time to wait before starting the first probe. probe means the health check of the container. If the container is not ready, it will not receive traffic from the service.
     periodSeconds: 5
     failureThreshold: 2
   liveness:

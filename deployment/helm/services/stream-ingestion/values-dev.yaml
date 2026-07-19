@@ -1,0 +1,33 @@
+#deployment/helm/services/stream-ingestion/values-dev.yaml
+
+# values-dev.yaml – base configuration for local development
+
+
+replicaCount: 1
+
+image:
+  repository: logiflow/stream-ingestion   # Docker image name
+  tag: local                              # local tag for Kind
+  pullPolicy: IfNotPresent                # use local image if available
+
+service:
+  type: ClusterIP                         # internal cluster-only access
+  port: 8080
+
+probes:
+  readiness:
+    path: /healthz                        # endpoint to check readiness
+  liveness:
+    path: /live                           # endpoint to check liveness
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+config:
+  kafkaBroker: "kafka:9092"               # address of Kafka broker
+  inputTopic: "events-raw"                # topic to consume

@@ -31,5 +31,7 @@ spec:
           livenessProbe:
             {{- include "logiflow.livenessProbe" . | nindent 12 }}
           env:
-            - name: HELLO_MSG
-            value: {{ .Values.config.helloMsg | quote }}
+            - name: KAFKA_BROKER
+              value: {{ .Values.config.kafkaBroker | quote }}
+            - name: INPUT_TOPIC
+              value: {{ .Values.config.inputTopic | quote }}

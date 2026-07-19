@@ -1,0 +1,11 @@
+# values-staging.yaml – overrides for the staging environment
+
+replicaCount: 2                           # more replicas than dev
+
+image:
+  tag: staging                            # special staging tag
+  pullPolicy: Always                      # always pull the latest staging image
+
+config:
+  kafkaBroker: "kafka-staging:9092"       # staging Kafka endpoint
+  inputTopic: "events-raw-staging"        # different topic for staging
