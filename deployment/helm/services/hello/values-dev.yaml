@@ -18,6 +18,10 @@ service:
 
 # Probe paths (can be overridden per service)
 probes:
+  startup:
+    path: /healthz          # temporary fix – use an existing endpoint that returns 200
+    failureThreshold: 30
+    periodSeconds: 5
   readiness:
     path: /healthz 
     initialDelaySeconds: 3 #this is the time to wait before starting the first probe. probe means the health check of the container. If the container is not ready, it will not receive traffic from the service.

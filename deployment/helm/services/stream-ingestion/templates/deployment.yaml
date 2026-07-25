@@ -26,6 +26,8 @@ spec:
             {{- include "logiflow.containerSecurityContext" . | nindent 12 }}
           resources:
             {{- include "logiflow.resources" . | nindent 12 }}
+          startupProbe:
+            {{- include "logiflow.startupProbe" . | nindent 12 }}
           readinessProbe:
             {{- include "logiflow.readinessProbe" . | nindent 12 }}
           livenessProbe:

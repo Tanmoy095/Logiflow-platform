@@ -61,6 +61,25 @@ limits:
   memory: {{ .Values.resources.limits.memory | default "256Mi" }}
 {{- end }}
 
+
+{{/*
+Startup Probe – protects slow‑starting containers from being killed.
+Defaults wait up to 30 checks × 5s = 150 seconds.
+/startup is a dedicated endpoint that the application must implement – it should return 200 only when everything (DB, models, caches) is initialised.
+
+30 attempts every 5 seconds = up to 150 seconds of patience.
+
+Services that start in 2 seconds will pass on the first check; AI services get plenty of time.
+*/}}
+{{- define "logiflow.startupProbe" -}}
+startupProbe:
+  httpGet:
+    path: {{ .Values.probes.startup.path | default "/startup" }}
+    port: {{ .Values.service.port | default 8080 }}
+  failureThreshold: {{ .Values.probes.startup.failureThreshold | default 30 }}
+  periodSeconds: {{ .Values.probes.startup.periodSeconds | default 5 }}
+{{- end }}
+
 {{/*
 Readiness probe – removes pod from Service if not ready
 */}}
