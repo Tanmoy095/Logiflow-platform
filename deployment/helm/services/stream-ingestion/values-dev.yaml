@@ -16,9 +16,7 @@ service:
 
 probes:
   startup:
-    path: /healthz          # <-- temporary fix
-    failureThreshold: 30
-    periodSeconds: 5
+    path: /healthz          # <-- temporary fix. Use an existing endpoint that returns 200, or /startupz if your app implements it
   readiness:
     path: /healthz                        # endpoint to check readiness
   liveness:

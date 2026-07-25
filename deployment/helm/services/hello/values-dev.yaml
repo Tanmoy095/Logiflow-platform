@@ -19,20 +19,12 @@ service:
 # Probe paths (can be overridden per service)
 probes:
   startup:
-    path: /healthz          # temporary fix – use an existing endpoint that returns 200
-    failureThreshold: 30
-    periodSeconds: 5
+    path: /healthz          # temporary fix – use an existing endpoint that returns 200  , or /startupz if your app implements it
   readiness:
     path: /healthz 
-    initialDelaySeconds: 3 #this is the time to wait before starting the first probe. probe means the health check of the container. If the container is not ready, it will not receive traffic from the service.
-    periodSeconds: 5
-    failureThreshold: 2
   liveness:
     path: /live
-    initialDelaySeconds: 5
-    periodSeconds: 10
-    failureThreshold: 3
-
+    
 # Resource requests and limits (defaults from library can be overridden here)
 resources:
   requests:
