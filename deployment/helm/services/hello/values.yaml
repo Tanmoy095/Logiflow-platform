@@ -1,0 +1,37 @@
+#deployment/helm/services/hello/values-dev.yaml
+# Hello Service – Default Values
+# ------------------------------------------------------------
+
+# Number of pod replicas. Override per environment via -f or --set.
+replicaCount: 1
+
+# Container image settings
+image:
+  repository: logiflow/hello   # Docker image name
+  tag: local                   # Tag used for local development
+  pullPolicy: IfNotPresent     # Use local image if available
+
+# Service configuration
+service:
+  type: ClusterIP              # Internal cluster-only access
+  port: 8080                   # Port the service and container use
+
+# Probe paths (can be overridden per service)
+probes:
+  startup:
+    path: /healthz          # temporary fix – use an existing endpoint that returns 200  , or /startupz if your app implements it
+  readiness:
+    path: /healthz 
+  liveness:
+    path: /live
+    
+# Resource requests and limits (defaults from library can be overridden here)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+config:
+  helloMsg: "Hello from LogiFlow"   # <-- required by the deployment template

@@ -131,3 +131,7 @@ clean: dev-down ## Remove generated files and cluster
 	@echo "Cleaning up..."
 	-docker rmi $(APP_IMAGE) 2>/dev/null
 	@echo "Done."
+
+.PHONY: generate-service
+generate-service: ## Generate a new service from the template
+	@bash scripts/dev/generate-service.sh
