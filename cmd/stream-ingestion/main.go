@@ -1,21 +1,127 @@
 package main
 
 import (
-    "os"
-    "os/signal"
-    "syscall"
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/Tanmoy095/LogiFlow-Platform/internal/observability"
 )
 
 func main() {
-    // 1. Load configuration
-    // 2. Initialize logger, metrics, tracing
-    // 3. Create infrastructure (repositories, clients)
-    // 4. Create application service
-    // 5. Create HTTP handler and router
-    // 6. Start HTTP server
-    // 7. Graceful shutdown
+	// ---- Configuration with defaults ----
+	port := 8080
+	if p := os.Getenv("PORT"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil {
+			port = v
+		}
+	}
 
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    <-quit
+	serviceName := os.Getenv("SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "stream-ingestion"
+	}
+
+	// 2. Log startup info (useful for debugging: PID, hostname)
+	pid := os.Getpid()
+	hostname, _ := os.Hostname()
+	log.Printf("%s starting: PID=%d hostname=%s port=%s", serviceName, pid, hostname, port)
+
+	// ---- Bootstrap Observability ----
+	// Using your centralized package instead of manual slog setup
+	obs := observability.New(serviceName)
+	obs.Logger.Info("service initializing", "port", port)
+
+	// ---- Handlers ----
+	// Liveness: ALWAYS returns 200 (no external dependency checks)
+	healthzHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}
+
+	// Readiness: can later be extended to check downstream services
+	readyHandler := func(w http.ResponseWriter, r *http.Request) {
+		// For now, always ready; in the future, check DB/Kafka etc.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	}
+
+	// Placeholder metrics endpoint
+	metricsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusNotImplemented)
+		_, _ = w.Write([]byte("metrics not yet implemented"))
+	}
+	startupzHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+	}
+	liveHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
+	}
+
+	// ---- HTTP Server Setup ----
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/startupz", startupzHandler)
+	mux.HandleFunc("/live", liveHandler)
+	mux.HandleFunc("/ready", readyHandler)
+	mux.HandleFunc("/metrics", metricsHandler)
+
+	srv := &http.Server{
+		Addr:         ":" + strconv.Itoa(port),
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// ---- Graceful Shutdown ----
+	// Create a context that cancels when SIGINT or SIGTERM is received.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Channel to signal when the server has finished shutting down
+	serverErrors := make(chan error, 1)
+
+	// Start the server in the background
+	go func() {
+		obs.Logger.Info("stream-ingestion service is ready", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErrors <- err
+		}
+	}()
+
+	// ---- Block & Wait ----
+	select {
+	case err := <-serverErrors:
+		obs.Logger.Error("server failed to start", "error", err)
+		os.Exit(1)
+
+	case <-ctx.Done():
+		// Signal received, begin graceful shutdown
+		log.Printf("%s received shutdown signal, draining...", serviceName)
+		obs.Logger.Info("shutdown initiated, setting readiness to false")
+
+		// Give Kubernetes time to stop sending traffic (optional)
+		// If you have a preStop hook, you can add a small delay here.
+		// time.Sleep(2 * time.Second)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("forced shutdown: %v", err)
+		}
+		log.Printf("%s stopped cleanly", serviceName)
+	}
+	obs.Logger.Info("service stopped")
+	obs.Logger.Info("service stopped cleanly")
 }

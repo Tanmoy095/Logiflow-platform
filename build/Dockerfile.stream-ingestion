@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# Stream Ingestion Service — Production-hardened multi‑stage build
+
+# ===== Stage 1: Builder =====
+FROM golang:1.25-alpine AS builder
+
+# Install tzdata for timezone support in the scratch runtime
+RUN apk add --no-cache tzdata
+
+# Create a non-root user and group explicitly for the scratch image
+RUN echo "nonroot:x:65532:65532:nonroot:/:/sbin/nologin" > /etc/passwd && \
+    echo "nonroot:x:65532:" > /etc/group
+
+WORKDIR /workspace
+
+# Cache dependency downloads
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+# Compile static binary targeting the stream-ingestion service
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /out/stream-ingestion ./cmd/stream-ingestion
+
+# ===== Stage 2: Runtime =====
+FROM scratch
+
+# Import system dependencies from builder
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/passwd /etc/group /etc/
+
+# Copy static binary with explicit non-root ownership
+COPY --from=builder --chown=65532:65532 /out/stream-ingestion /stream-ingestion
+
+# Execute using the named unprivileged user ID
+USER 65532:65532
+
+EXPOSE 8080
+ENTRYPOINT ["/stream-ingestion"]

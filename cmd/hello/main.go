@@ -58,10 +58,20 @@ func main() {
 		w.WriteHeader(http.StatusNotImplemented)
 		_, _ = w.Write([]byte("metrics not yet implemented"))
 	}
+	startupzHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+	}
+	liveHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
+	}
 
 	// ---- HTTP Server Setup ----
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/startupz", startupzHandler)
+	mux.HandleFunc("/live", liveHandler)
 	mux.HandleFunc("/ready", readyHandler)
 	mux.HandleFunc("/metrics", metricsHandler)
 

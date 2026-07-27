@@ -19,7 +19,7 @@ service:
 # Probe paths (can be overridden per service)
 probes:
   startup:
-    path: /healthz          # temporary fix – use an existing endpoint that returns 200  , or /startupz if your app implements it
+    path: /startupz          # temporary fix – use an existing endpoint that returns 200  , or /startupz if your app implements it
   readiness:
     path: /healthz 
   liveness:
