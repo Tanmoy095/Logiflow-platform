@@ -1,154 +1,155 @@
-# ADR-011 — GitOps Deployment Strategy with ArgoCD
+# ADR-011: GitOps Deployment Strategy with Argo CD
 
 **Date:** 2026-07-28  
 **Status:** Accepted  
 **Author:** Aunmoy Dey Tanmoy  
 **Decision Owner:** Aunmoy Dey Tanmoy  
 **Project:** LogiFlow  
-**Supersedes:** None  
-**Related:** ADR-005 (Platform Standardization), ADR-007 (Contracts & Versioning)
+**Related:** ADR-005 (Platform Standardization), ADR-007 (Contracts and Versioning)
 
----
+## Context
 
-## 1. Context
+LogiFlow is growing toward 15+ microservices, each deployed across development, staging, and production.
+The current imperative model relies on local `make dev-up` workflows for development and manual `helm upgrade --install` steps for shared environments.
 
-LogiFlow is growing toward 15+ microservices, each requiring deployments to multiple environments (development, staging, production). The current deployment model relies on developers running `make dev-up` locally for dev, and manually executing `helm upgrade --install` for staging and production. This imperative approach creates several operational risks:
+That approach introduces drift, weak auditability, manual toil, inconsistent environments, and unnecessary production access.
+As the platform becomes AI-native, deployment must be deterministic, auditable, and safe for both humans and AI agents.
 
-- **No single source of truth** – the live cluster state can drift from what is defined in Git.
-- **No audit trail** – it is impossible to determine who changed a deployment parameter, when, or why.
-- **Manual overhead** – every configuration change requires a human to execute a command, increasing toil and the chance of error.
-- **Inconsistent environments** – dev, staging, and production can diverge because different people run different commands.
-- **Security exposure** – multiple team members need direct `kubectl` access to production clusters.
+## Problem
 
-As the platform evolves toward an AI‑native internal developer platform, it is critical that all deployment operations become deterministic, auditable, and safe for both human and AI agents.
+How should LogiFlow manage applications across multiple environments so the live cluster always matches the intended state in version control, without requiring direct human access to production clusters?
 
----
+## Decision
 
-## 2. Problem
+LogiFlow adopts a GitOps deployment strategy with Argo CD as the reconciliation engine.
 
-How should LogiFlow manage the lifecycle of applications across multiple environments in a way that guarantees the cluster state always matches the intended state defined in version control, while eliminating direct human access to production clusters and enabling safe AI‑assisted changes?
+### 1. Git is the single source of truth
 
----
+The desired state of every application in every environment is declared in Git, not in a terminal, pipeline script, or live cluster.
 
-## 3. Decision
+### 2. Argo CD reconciles the cluster
 
-**LogiFlow adopts a GitOps deployment strategy using ArgoCD as the reconciliation engine.**
+Argo CD continuously watches Git, renders the desired manifests, compares them to the live cluster, and synchronizes drift when automated sync is enabled.
 
-### 3.1 Git as the Single Source of Truth
-The desired state of every application in every environment is declared in Git – not in the cluster, not in a CI pipeline script, and not in an engineer’s terminal. Git becomes the authoritative record of what *should* be running.
+### 3. App of apps organizes environments
 
-### 3.2 ArgoCD as the Reconciliation Engine
-ArgoCD is a Kubernetes-native controller that continuously:
-1. Watches the Git repository.
-2. Renders Helm charts (or Kustomize overlays, plain YAML, etc.) from the declared source.
-3. Compares the rendered desired state with the live cluster state.
-4. Automatically synchronizes (if `syncPolicy.automated` is set) to eliminate any drift.
+Each environment has a parent Application that watches a dedicated directory of child Application manifests.
+This keeps dev, staging, and production isolated while using the same deployment pattern.
 
-ArgoCD itself is configured via Git (the “app of apps” pattern), so the entire deployment infrastructure is itself Git-managed.
-
-### 3.3 Application of Apps for Environment Separation
-A single parent Application watches a directory of child Application manifests. Each environment (dev, staging, prod) has its own parent Application and its own directory of child Application YAMLs. Adding a new service or changing an existing one requires only editing or adding the appropriate child Application file and pushing to Git. ArgoCD detects the change and applies it to the correct environment automatically.
-
-**Repository structure:**
+```text
 deployment/gitops/argocd/
-├── parent-dev.yaml # watches apps-dev/
-├── parent-staging.yaml # watches apps-staging/
-├── parent-prod.yaml # watches apps-prod/
+├── parent-dev.yaml        # watches apps-dev/
+├── parent-staging.yaml    # watches apps-staging/
+├── parent-prod.yaml       # watches apps-prod/
 ├── apps-dev/
-│ ├── hello-app.yaml
-│ ├── stream-ingestion-app.yaml
-│ └── ...
+│   ├── hello-app.yaml
+│   ├── stream-ingestion-app.yaml
+│   └── ...
 ├── apps-staging/
-│ └── ...
+│   └── ...
 └── apps-prod/
-└── ...
+	└── ...
+```
 
-text
+Each child Application defines:
 
-Each child Application specifies:
-- The Git repository and path to the Helm chart.
-- The environment-specific values file (e.g., `values-dev.yaml`, `values-prod.yaml`).
-- The destination cluster and namespace.
-- The sync policy (automated, with `prune` and `selfHeal` enabled).
+- The Git repository and Helm chart path.
+- The environment-specific values file.
+- The target cluster and namespace.
+- The sync policy, including automated sync, prune, and self-heal.
 
-### 3.4 Sync Policy: Automated, Prune, Self‑Heal
-All LogiFlow applications are configured with:
-- `automated` – changes in Git are applied without manual intervention.
-- `prune: true` – resources removed from Git are automatically deleted from the cluster.
-- `selfHeal: true` – any manual `kubectl` edit in production is automatically reverted to match Git within minutes.
+### 4. Automated sync, prune, and self-heal are mandatory
 
-### 3.5 CI Role: Validate, Never Deploy
-CI pipelines (GitHub Actions) will lint and render (`helm template`) the charts to validate correctness, but they will never execute `helm install` or `kubectl apply` against a cluster. Deployment is solely the responsibility of the GitOps controller running inside the cluster. This separates the validation concern (CI) from the delivery concern (ArgoCD), following the principle of least privilege.
+- `automated` means Git changes apply without manual intervention.
+- `prune: true` means resources removed from Git are deleted from the cluster.
+- `selfHeal: true` means manual production edits are reverted back to Git-defined state.
 
-### 3.6 Local Development Remains Imperative
-For fast iteration on a developer’s laptop, `make dev-up` and `helm upgrade --install` remain the recommended workflow. GitOps governs shared environments (staging and production), not personal development clusters.
+### 5. CI validates, Argo CD deploys
 
----
+CI pipelines lint and render charts with `helm template`, but they do not deploy to clusters.
+Deployment is the responsibility of Argo CD inside the cluster.
 
-## 4. Consequences
+### 6. Local development stays imperative
 
-### 4.1 Positive
+`make dev-up` and `helm upgrade --install` remain the right tools for local iteration.
+GitOps governs shared environments, not a developer’s laptop.
 
-- **Complete auditability** – every deployment is a Git commit with author, timestamp, and message.
-- **Instant rollback** – `git revert` and push. ArgoCD returns the cluster to the previous state without any direct cluster interaction.
-- **Self‑healing** – manual changes in production are automatically reverted. The cluster always converges to Git.
-- **Reduced attack surface** – developers and CI pipelines only need Git access; they never need `kubectl` credentials for production clusters.
-- **Environment consistency** – the same mechanism (app of apps) deploys to dev, staging, and prod, eliminating environment drift.
-- **AI‑agent safety** – AI agents can propose changes via pull requests; they never touch the cluster directly. Git serves as the safety boundary.
-- **Operational simplicity** – adding a new service requires only a Helm chart and three child Application YAML files. A single commit deploys to all environments.
+## Rationale
 
-### 4.2 Negative / Risks
+This model gives LogiFlow a deployment system that is:
 
-- **Initial setup complexity** – ArgoCD must be installed and the parent Applications bootstrapped. This is a one‑time cost.
-- **ArgoCD becomes critical infrastructure** – if ArgoCD is unavailable, automatic deployments stop. However, the cluster continues to run; only changes are paused. High availability of ArgoCD is a future consideration.
-- **Secrets management** – sensitive values (passwords, tokens) cannot be stored in Git. An external secret management solution (Sealed Secrets, External Secrets Operator, or a vault) must be adopted alongside GitOps.
-- **Learning curve** – developers must learn to work with Git as the deployment interface, and understand the GitOps reconciliation loop.
+- Auditable, because every change is a Git commit.
+- Reversible, because rollback is a Git revert.
+- Safe, because developers and CI do not need production cluster credentials.
+- Consistent, because all environments use the same control pattern.
+- AI-ready, because AI agents can propose changes without being given direct cluster authority.
 
----
+```mermaid
+flowchart TB
+	dev[Developer or AI Agent] --> pr[Pull Request]
+	pr --> ci[CI Validation]
+	ci --> merge[Merge to main]
+	merge --> argocd[Argo CD]
+	argocd --> reconcile[Compare desired vs live state]
+	reconcile --> cluster[Kubernetes Cluster]
+	cluster --> heal[Self-heal and drift correction]
+```
 
-## 5. Alternatives Considered
+## Consequences
+
+### Positive
+
+- Every deployment is traceable to a Git commit.
+- `git revert` becomes the rollback mechanism.
+- Production drift is corrected automatically.
+- Git and cluster state stay aligned across environments.
+- The attack surface is reduced because production credentials stay with Argo CD.
+- AI agents can contribute safely through pull requests.
+- Adding a new service becomes a repeatable Git operation.
+
+### Risks
+
+- Argo CD becomes critical platform infrastructure.
+- The initial bootstrap requires discipline and one-time setup effort.
+- Secrets cannot live plainly in Git and require a secret-management strategy.
+- The team must learn GitOps concepts and Argo CD operational behavior.
+
+## Alternatives Considered
 
 | Alternative | Why Rejected |
-|-------------|---------------|
-| **Push‑based CI/CD (CI runs `helm upgrade`)** | CI requires direct cluster access, creating a security risk. The CI pipeline becomes the deployment bottleneck; if CI is down, deployments halt. No self‑healing or continuous reconciliation. |
-| **Manual `helm install` / `kubectl apply`** | No audit trail, high risk of configuration drift, unscalable beyond a handful of services. |
-| **Using only `make dev-up` for all environments** | Not suitable for production; requires local tools and cluster access. No separation between dev and prod. |
-| **Kustomize with a push‑based model** | Similar security and drift issues; Kustomize does not provide a reconciliation loop. |
-| **FluxCD (alternative GitOps controller)** | FluxCD is a valid alternative, but ArgoCD has a richer UI, more mature application‑centric model, and is the industry‑standard choice for the use case. The underlying GitOps principles are identical; switching between them is a configuration change, not an architectural one. |
+| --- | --- |
+| Push-based CI/CD with `helm upgrade` | Requires direct cluster access and creates a deployment bottleneck. |
+| Manual `helm install` / `kubectl apply` | No audit trail, high drift risk, and poor scalability. |
+| Using only `make dev-up` for all environments | Not suitable for shared or production environments. |
+| Kustomize with a push model | Still lacks continuous reconciliation and has similar access risks. |
+| FluxCD | Valid alternative, but Argo CD provides the application-centric model and UI preferred for this platform. |
 
----
+## AI Platform Alignment
 
-## 6. Why GitOps Aligns with LogiFlow’s Long‑Term AI Platform Vision
+LogiFlow is designed as an AI-native internal developer platform.
+In that model:
 
-LogiFlow is designed from the ground up to be an AI‑native internal developer platform. In that future:
+- AI agents generate scaffolds, values, and infrastructure changes.
+- Git is the safety boundary.
+- CI validates the change.
+- Humans review and merge.
+- Argo CD deploys automatically.
 
-- **AI coding agents** will generate service scaffolds, Helm values, and even infrastructure changes.
-- Those agents cannot be trusted with direct `kubectl` access to production clusters—the blast radius of a bad AI‑generated command is too high.
-- Git acts as the **safety boundary**: an AI agent proposes a change via a pull request. CI validates the Helm chart (`helm lint`, `helm template`). A human reviews and merges. ArgoCD deploys automatically.
-- If the deployed change causes an incident, a `git revert` instantly rolls back the entire change across all affected environments.
-- The reconciliation loop ensures that even if an operator manually patches something during an outage, the system will converge back to the audited Git state once the emergency is resolved.
+This preserves control while still allowing automation to move quickly.
 
-This pattern—**AI proposes, Git gates, ArgoCD deploys**—is the same model used by leading AI infrastructure companies to scale safely. It turns Git into the control plane for both human and AI‑driven operations, making the platform resilient, auditable, and secure as automation increases.
-
----
-
-## 7. Implementation Status
+## Implementation Status
 
 - [x] Parent Applications for `logiflow-dev`, `logiflow-staging`, and `logiflow-prod` defined.
-- [x] Child Application manifests for `hello` and `stream‑ingestion` created in all three environment directories.
-- [x] GitOps flow manually simulated using `helm template | kubectl apply` to validate the concept.
-- [ ] ArgoCD controller installed on the target cluster(s).
-- [ ] Parent Applications deployed and bootstrapped.
+- [x] Child Application manifests for `hello` and `stream-ingestion` created in the environment directories.
+- [x] GitOps flow validated conceptually using `helm template | kubectl apply`.
+- [ ] Argo CD controller installed on the target cluster(s).
+- [ ] Parent Applications bootstrapped in the cluster.
 - [ ] External secrets management integrated for production secrets.
 
----
+## References
 
-## 8. References
-
-- GitOps configuration: `deployment/gitops/argocd/`
-- Parent Applications: `parent-dev.yaml`, `parent-staging.yaml`, `parent-prod.yaml`
-- Child Applications: `apps-dev/`, `apps-staging/`, `apps-prod/`
-- GitOps README: `deployment/gitops/argocd/README.md`
-- Helm library chart (used by all services): `deployment/helm/library/logiflow-service/`
+- GitOps configuration: [deployment/gitops/argocd/](../../deployment/gitops/argocd/)
+- GitOps README: [deployment/gitops/argocd/README.md](../../deployment/gitops/argocd/README.md)
+- Helm library chart: [deployment/helm/library/logiflow-service/](../../deployment/helm/library/logiflow-service/)
 - ADR-005: Platform Standardization with Helm Library Charts
-- ADR-007: Platform Contracts & Versioning
+- ADR-007: Platform Contracts and Versioning
