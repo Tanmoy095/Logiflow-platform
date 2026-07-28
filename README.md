@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 **LogiFlow is a production-grade internal developer platform for multi-tenant AI workloads.**
-It provides a **Golden Path** for building, deploying, and operating microservices on Kubernetes, from a single-command local environment to a GitOps-driven multi-cluster production setup. Every decision in this repository is guided by **Domain-Driven Design (DDD)**, platform engineering, and deploy-first principles, ensuring that the platform scales from 2 to 200 services without structural drift.
+It provides a **Golden Path** for building, deploying, and operating microservices on Kubernetes, from a single-command local environment to a GitOps-driven release model in [deployment/gitops/argocd/README.md](deployment/gitops/argocd/README.md). Every decision in this repository is guided by **Domain-Driven Design (DDD)**, platform engineering, and deploy-first principles, ensuring that the platform scales from 2 to 200 services without structural drift.
 
 > **For recruiters & hiring managers:** This project demonstrates the ability to design and implement a complete internal platform, including Helm library charts, opinionated health-check policies, multi-environment strategies, automated service scaffolding, DDD-enforced code skeletons, and CI-ready workflows.
 
@@ -36,6 +36,23 @@ flowchart TB
 - Platform owns infrastructure; developers own business logic. The Helm library chart and Go service skeleton enforce this contract.
 - Deploy-first. Every service has probes, resource limits, security contexts, and a local Kind smoke test.
 - AI-agent compatible. Standardized templates and generation scripts let AI agents safely scaffold new services.
+
+## GitOps and Release Flow
+
+LogiFlow keeps release orchestration in Git. The repository includes Argo CD parent Applications for dev, staging, and production under [deployment/gitops/argocd/](deployment/gitops/argocd/), and the detailed operating model is documented in [deployment/gitops/argocd/README.md](deployment/gitops/argocd/README.md).
+
+```mermaid
+flowchart TB
+	dev[Developer or AI Agent] --> pr[Pull Request]
+	pr --> ci[CI Validation]
+	ci --> merge[Merge to main]
+	merge --> argocd[Argo CD]
+	argocd --> reconcile[Compare desired vs live state]
+	reconcile --> cluster[Kubernetes Cluster]
+	cluster --> heal[Self-heal and drift correction]
+```
+
+The practical result is simple: developers change Git, CI validates the change, Argo CD applies it, and the cluster converges back to what is declared in source control. Manual production edits are treated as drift, not as the source of truth.
 
 ## Repository Structure
 
@@ -123,6 +140,10 @@ This means a security policy update is a one-line change that propagates to all 
 #### deployment/helm/services/<service>/ - Per-Service Charts
 
 Service charts are thin wrappers that only provide a values.yaml with the container image, port, and environment variables. All infrastructure is inherited from the library. Environment-specific overrides, such as values-staging.yaml and values-prod.yaml, plus secrets like values-prod-secrets.yaml, follow the same pattern.
+
+#### deployment/gitops/argocd/ - GitOps Control Plane
+
+This directory defines the Argo CD application structure for GitOps delivery. Parent Applications point at environment folders, and child Applications define service-specific Helm releases. Dev child Applications already exist for `hello` and `stream-ingestion`, while staging and production directories are ready for expansion.
 
 #### dev/ and scripts/ - Local Developer Experience
 
@@ -219,7 +240,7 @@ SERVICE=my-service make generate-service
 | Message Broker | Apache Kafka (planned) |
 | Database | PostgreSQL, pgvector (planned) |
 | Workflow Engine | Temporal (planned) |
-| GitOps | Argo CD (planned) |
+| GitOps | Argo CD |
 | Security | Kyverno, Keycloak (planned) |
 
 ## Roadmap

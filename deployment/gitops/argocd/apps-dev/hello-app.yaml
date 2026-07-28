@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1 # it means that this is an Argo CD application manifest
+kind: Application
+metadata:
+  name: hello-app
+  namespace: argocd #argocd is the namespace where Argo CD is installed
+spec:
+  project: default # the project this application belongs to
+  source:
+    repoURL: https://github.com/Tanmoy095/Logiflow-platform # the Git repository URL where the application manifests are stored
+    targetRevision: main # the branch or tag to deploy from
+    path: deployment/helm/services/hello # the path within the repository where the application manifests are located or directory of our helm chart 
+    helm:
+         valueFiles:
+           - values-dev.yaml # the values file to use for the Helm chart(base values file override per environment)
+  destination:
+    server: https://kubernetes.default.svc # the Kubernetes API server URL where the application will be deployed
+    namespace: logiflow # the namespace in the cluster where the application will be deployed
+  syncPolicy:
+    automated: # automatically sync the application with the source
+      prune: true # automatically delete resources that are no longer defined in the source
+      selfHeal: true # automatically apply changes to the cluster if the live state deviates from the desired state
+    syncOptions:
+      - CreateNamespace=true # automatically create the namespace if it does not exist
+
+
+
+#this single yaml file will replace every manual kubectl apply commands for the application deployment. It will also manage the application lifecycle, including updates and rollbacks, through Argo CD.

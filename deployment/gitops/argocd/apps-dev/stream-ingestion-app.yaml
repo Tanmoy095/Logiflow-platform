@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stream-ingestion
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Tanmoy095/LogiFlow-Platform
+    targetRevision: main
+    path: deployment/helm/services/stream-ingestion
+    helm:
+      valueFiles:
+        - values-dev.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logiflow-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logiflow-prod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Tanmoy095/LogiFlow-Platform
+    targetRevision: main
+    path: deployment/gitops/argocd/apps-prod   # <-- prod folder
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
