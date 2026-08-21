@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "logiflow.selectorLabels" . | replace ": " "-" | lower }}
+  labels:
+    {{- include "logiflow.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "logiflow.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "logiflow.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- include "logiflow.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          securityContext:
+            {{- include "logiflow.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            {{- include "logiflow.readinessProbe" . | nindent 12 }}
+          resources:
+            {{- include "logiflow.resources" . | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.service.port }}

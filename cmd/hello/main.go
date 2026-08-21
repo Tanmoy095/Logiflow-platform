@@ -31,7 +31,7 @@ func main() {
 	// 2. Log startup info (useful for debugging: PID, hostname)
 	pid := os.Getpid()
 	hostname, _ := os.Hostname()
-	log.Printf("%s starting: PID=%d hostname=%s port=%s", serviceName, pid, hostname, port)
+	log.Printf("%s starting: PID=%d hostname=%s port=%d", serviceName, pid, hostname, port)
 
 	// ---- Bootstrap Observability ----
 	// Using your centralized package instead of manual slog setup

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: logiflow-service
+description: Standard platform definitions for all LogiFlow microservices
+type: library
+version: 0.1.0
