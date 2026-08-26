@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "logiflow.selectorLabels" . | replace ": " "-" | lower }}
+  name: {{ include "logiflow.name" . }}
   labels:
     {{- include "logiflow.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "logiflow.selectorLabels" . | nindent 6 }}
@@ -19,11 +19,14 @@ spec:
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          securityContext:
-            {{- include "logiflow.containerSecurityContext" . | nindent 12 }}
-          readinessProbe:
-            {{- include "logiflow.readinessProbe" . | nindent 12 }}
-          resources:
-            {{- include "logiflow.resources" . | nindent 12 }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.port }}
+          securityContext:
+            {{- include "logiflow.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- include "logiflow.resources" . | nindent 12 }}
+          {{ include "logiflow.probes" . | nindent 10 }}
+          env:
+            - name: HELLO_MSG
+              value: {{ .Values.config.helloMsg | quote }}
