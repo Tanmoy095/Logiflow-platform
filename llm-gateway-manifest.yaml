@@ -1,0 +1,100 @@
+---
+# Source: llm-gateway/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/instance: dev
+    app.kubernetes.io/version: ""
+    app.kubernetes.io/part-of: logiflow
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/instance: dev
+---
+# Source: llm-gateway/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/instance: dev
+    app.kubernetes.io/version: ""
+    app.kubernetes.io/part-of: logiflow
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway
+      app.kubernetes.io/instance: dev
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-gateway
+        app.kubernetes.io/instance: dev
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: llm-gateway
+          image: "logiflow/llm-gateway:local"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 30
+          
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          env:
+            - name: llm_gateway
+              value: "llm-gateway"
+            - name: PORT
+              value: "8080"

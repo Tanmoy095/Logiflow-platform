@@ -1,11 +1,8 @@
 # values-staging.yaml – overrides for staging environment
-#DEPLOYMENT/HELM/SERVICES/HELLO/VALUES-STAGING.YAML
+#DEPLOYMENT/HELM/SERVICES/llm-gateway/VALUES-STAGING.YAML
 
 replicaCount: 2
 
 image:
-  tag: staging          # overrides tag from dev
-  pullPolicy: Always    # always pull to ensure latest staging
-
-config:
-  helloMsg: "Hello from Staging"
+  tag: staging # overrides tag from dev
+  pullPolicy: Always # always pull to ensure latest staging
