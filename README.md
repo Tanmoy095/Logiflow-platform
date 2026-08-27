@@ -37,6 +37,155 @@ flowchart TB
 - Deploy-first. Every service has probes, resource limits, security contexts, and a local Kind smoke test.
 - AI-agent compatible. Standardized templates and generation scripts let AI agents safely scaffold new services.
 
+## LLM Gateway Overview
+
+The `llm-gateway` is LogiFlow's internal AI control plane and anti-corruption layer. It sits between trusted internal services and untrusted external model providers such as OpenAI, Gemini, and Anthropic. Its purpose is to give the rest of the platform one stable, provider-neutral contract for controlled AI execution.
+
+The gateway prevents every downstream service from independently implementing provider SDKs, prompt handling, tenant budgets, retries, validation, cost accounting, and outage behavior. This creates one policy boundary that can evolve independently from `stream-ingestion`, `knowledge-pipeline`, and future consumers.
+
+### Gateway Responsibilities
+
+The target gateway owns the following decisions:
+
+- Accept a typed completion request from an internal service, including tenant and tracing context.
+- Enforce tenant authorization, rate limits, and token or cost budgets before spending money with a provider.
+- Select a provider through a stable internal policy rather than exposing vendor-specific APIs upstream.
+- Apply strict context deadlines, bounded retries, circuit breaking, and fallback routing for operational failures.
+- Treat every model response as untrusted until syntax, schema, and domain-invariant validation succeeds.
+- Return a trusted `CompletionResult` or an explicit refusal that can be routed to human review.
+- Publish usage and cost events asynchronously so billing does not block the completion response.
+- Emit provider, latency, token, validation, and trace metadata for operational diagnosis.
+
+### End-To-End Architecture
+
+```mermaid
+flowchart TB
+	client[knowledge-pipeline\ninternal caller] -->|gRPC completion request\ntenant_id + trace context| gateway[llm-gateway\nAI policy and trust boundary]
+
+	subgraph controls[Gateway controls]
+		identity[Authorize tenant\nand request]
+		budget[Redis budget and\nrate-limit check]
+		cache[Tenant-scoped\nsemantic cache]
+		policy[Provider strategy\nand prompt policy]
+		identity --> budget --> cache --> policy
+	end
+
+	gateway --> controls
+	policy --> primary[OpenAI\nprimary adapter]
+	policy --> secondary[Gemini / Anthropic\nfallback adapters]
+	primary --> response[Raw model response]
+	secondary --> response
+	response --> syntax[1. Syntax\nJSON parsing]
+	syntax --> schema[2. Schema\nfield and type checks]
+	schema --> domain[3. Domain\ninvariant checks]
+	domain --> trusted[Trusted CompletionResult]
+	domain --> refusal[Validation refusal\nReviewRequired]
+
+	trusted --> client
+	trusted --> usage[UsageCostEvent]
+	usage --> kafka[Kafka]
+	kafka --> billing[billing service]
+	billing --> ledger[(PostgreSQL\nauthoritative ledger)]
+```
+
+### Request Lifecycle
+
+The intended completion path is deliberately ordered:
+
+1. `knowledge-pipeline` sends a synchronous gRPC request because it needs the AI result before it can continue chunking, embedding, and indexing a document.
+2. The gateway authenticates the service and extracts `tenant_id`, request identity, and trace metadata.
+3. Redis performs an atomic tenant budget and rate-limit decision. An exhausted budget is rejected before any provider call.
+4. The gateway checks a tenant-scoped semantic cache. A cache hit is returned only if the cached result is still valid for the tenant and prompt version.
+5. On a cache miss, a provider strategy selects OpenAI or another configured provider and invokes it with a strict deadline.
+6. Operational failures such as timeouts, HTTP 429, or selected HTTP 5xx responses use bounded retry or fallback behavior.
+7. The response passes syntax validation, schema validation, and domain-invariant validation in that order.
+8. A valid result is returned to the caller, and token usage and cost metadata are emitted asynchronously to Kafka.
+9. The billing service consumes the usage event and writes the durable financial record to PostgreSQL.
+10. Invalid or semantically unsafe output is refused and marked for review; it is never silently repaired or passed to automation.
+
+### Why The Flow Uses Both gRPC And Kafka
+
+These protocols solve different problems. gRPC is the synchronous request-response boundary between `knowledge-pipeline` and the gateway: it provides typed Protobuf contracts, HTTP/2 multiplexing, deadline propagation, and standard status codes. Kafka is the asynchronous event boundary for `UsageCostEvent`: it allows billing to consume, retry, replay, and reconcile usage without adding database latency to the AI request.
+
+```mermaid
+flowchart LR
+	upload[Client uploads evidence] --> ingestion[stream-ingestion]
+	ingestion -->|persist receipt| postgres[(PostgreSQL)]
+	ingestion -->|RawEvidenceReceived| events[Kafka]
+	events --> worker[knowledge-pipeline]
+	worker -->|synchronous gRPC| gateway[llm-gateway]
+	gateway -->|validated result| worker
+	gateway -->|asynchronous UsageCostEvent| events2[Kafka]
+	events2 --> billing[billing]
+```
+
+Keeping the ingestion path asynchronous means a slow provider does not prevent a file from being durably accepted. Keeping the gateway call synchronous means the worker receives a typed result or failure before it writes derived vectors and citations.
+
+### Trust Boundary And Output Safety
+
+The gateway is an anti-corruption layer because provider output is not trusted merely because the provider returned HTTP 200. The target risk-assessment contract contains `shipment_id`, `risk`, `confidence`, and `reasons`.
+
+```mermaid
+flowchart TD
+	raw[Provider output] --> parse{Valid JSON?}
+	parse -->|No| parseError[ParseError\nrefuse]
+	parse -->|Yes| shape{Required fields\nand types?}
+	shape -->|No| schemaError[SchemaError\nrefuse]
+	shape -->|Yes| rules{Business rules\nsatisfied?}
+	rules -->|No| review[ReviewRequired\nstop automated action]
+	rules -->|Yes| result[Trusted result\nreturn to worker]
+```
+
+Schema validation can verify that `confidence` is a number. Domain validation must additionally verify that:
+
+$$0.0 \leq \mathrm{confidence} \leq 1.0$$
+
+It must also reject a `high_risk` result with no evidence in `reasons`. The gateway must not clamp an invalid value such as `1.7` to `1.0` or invent a reason. Silent correction hides model degradation and can trigger unsafe operational or financial automation.
+
+### Failure Classification
+
+The gateway treats operational failures and data-integrity failures differently:
+
+```mermaid
+flowchart LR
+	failure[Provider outcome] --> classify{Failure type}
+	classify -->|Timeout / 429 / 5xx / network| operational[Operational failure]
+	operational --> control[Deadline + bounded retry\ncircuit breaker]
+	control --> fallback[Fallback provider\nor trusted cache]
+	classify -->|Malformed / wrong schema /\ndomain invariant violation| integrity[Integrity failure]
+	integrity --> refuse[Refuse result\nReviewRequired]
+```
+
+Fallback is appropriate when the provider could not safely produce a result. It is not a substitute for validation when a provider returns a logically invalid result. Retrying semantic failures wastes tokens and can produce a plausible but unsafe answer.
+
+### Budget, Consistency, And Cost Control
+
+The gateway is stateless at the application instance level. Shared tenant state belongs in Redis so any replica can enforce the same budget and rate policy. A Redis Lua script or equivalent atomic operation prevents race conditions between concurrent replicas.
+
+Kafka carries usage events to the billing service, while PostgreSQL remains the authoritative ledger. This write-behind design avoids synchronous database locks and connection-pool exhaustion on the completion path, at the cost of eventual consistency and a reconciliation dependency.
+
+Budget enforcement is more important than availability: if the authoritative Redis write path is unavailable, the production policy should fail closed rather than permit unbounded provider spend. A fail-open or AP policy may be acceptable for non-critical, read-only semantic cache data, but not for financial budget decrements.
+
+### Resilience And Observability
+
+Each provider has an independent circuit breaker. A failing OpenAI circuit must not disable healthy Gemini or Anthropic capacity. Strict deadlines stop waiting for slow calls; bounded retries prevent retry storms; half-open probes test recovery; and fallback results pass the same validation pipeline as primary results.
+
+The gateway should expose telemetry that separates external provider latency from internal processing:
+
+- `provider_latency_ms`: provider round-trip time.
+- `validation_latency_ms`: syntax, schema, and domain validation time.
+- `total_gateway_latency_ms`: complete gateway request time.
+- `model_provider`, model, prompt version, token usage, estimated cost, cache outcome, retry count, and circuit state.
+- W3C `traceparent` propagated through Kafka headers and gRPC metadata.
+
+### Current Implementation And Plan
+
+The current implementation is intentionally deploy-first rather than feature-complete. It provides a Go process that listens on `PORT` (default `8080`), serves `/healthz`, `/startupz`, and `/live`, and shuts down gracefully on `SIGINT` or `SIGTERM`. It is packaged with `build/Dockerfile.llm-gateway` and deployed through `deployment/helm/services/llm-gateway/`.
+
+The DDD folders, provider adapters, Redis ports, Kafka ports, gRPC handlers, validation policies, circuit breakers, fallbacks, and telemetry integrations are the next implementation stages. The full design explains the intended contracts and trade-offs without presenting planned behavior as already implemented.
+
+For the complete LLM Gateway system design, including DDD boundaries, request flows, CAP and Redis decisions, timeout and circuit-breaker behavior, fallback-versus-refusal policy, security, observability, deployment, testing, and decision trade-offs, see [services/llm-gateway/System_Design.md](services/llm-gateway/System_Design.md). The original HLD source is available at [services/llm-gateway/LogiFlow\_ LLM_GATEWAY_HLD.pdf](services/llm-gateway/LogiFlow_%20LLM_GATEWAY_HLD.pdf).
+
 ## GitOps and Release Flow
 
 LogiFlow keeps release orchestration in Git. The repository includes Argo CD parent Applications for dev, staging, and production under [deployment/gitops/argocd/](deployment/gitops/argocd/), and the detailed operating model is documented in [deployment/gitops/argocd/README.md](deployment/gitops/argocd/README.md).
