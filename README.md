@@ -301,7 +301,7 @@ Service charts are thin wrappers that only provide a values.yaml with the contai
 
 The llm-gateway chart is located at `deployment/helm/services/llm-gateway/`. Its container image is built with `build/Dockerfile.llm-gateway`, and its chart inherits the platform labels, security contexts, resources, and probe timings from the library chart.
 
-The complete llm-gateway architecture, including bounded-context boundaries, provider fallback, budget enforcement, validation, observability, deployment flows, and design trade-offs, is documented in [services/llm-gateway/System_Design.md](services/llm-gateway/System_Design.md). The original high-level design source is retained at [services/llm-gateway/LogiFlow\_ LLM_GATEWAY_HLD.pdf](services/llm-gateway/LogiFlow_%20LLM_GATEWAY_HLD.pdf).
+The complete llm-gateway architecture, including bounded-context boundaries, provider fallback, budget enforcement, validation, observability, deployment flows, and design trade-offs, is documented in [services/llm-gateway/System_Design.md](services/llm-gateway/System_Design.md). The low-level implementation contract, including SOLID principles, object composition, interfaces, concurrency, design patterns, error handling, and test strategy, is documented in [services/llm-gateway/LLD_System_Design.md](services/llm-gateway/LLD_System_Design.md). The original high-level design source is retained at [services/llm-gateway/LogiFlow\_ LLM_GATEWAY_HLD.pdf](services/llm-gateway/LogiFlow_%20LLM_GATEWAY_HLD.pdf).
 
 #### deployment/gitops/argocd/ - GitOps Control Plane
 
