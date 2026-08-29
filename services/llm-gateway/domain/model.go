@@ -1,3 +1,5 @@
+// 	services/llm-gateway/domain/model.go
+
 package domain
 
 import "fmt"
@@ -23,6 +25,7 @@ reasons requirement
 
 */
 
+// Risk represents the business classification assigned to a shipment.
 type Risk string
 
 const (
@@ -31,11 +34,14 @@ const (
 	RiskHighRisk   Risk = "high_risk"
 )
 
+// Request represents the business request to perform a controlled
+// AI completion for a specific shipment.
 type Request struct {
 	ShipmentID string
 	Prompt     string
 }
 
+// CompletionResult is the trusted representation of an AI completion.
 type CompletionResult struct {
 	ShipmentID string   `json:"shipment_id"`
 	Risk       Risk     `json:"risk"`
@@ -43,7 +49,7 @@ type CompletionResult struct {
 	Reasons    []string `json:"reasons"`
 }
 
-func (r *Request) Validate() error {
+func (r Request) Validate() error {
 	if r.ShipmentID == "" {
 		return fmt.Errorf("shipment_id must not be empty")
 	}
@@ -55,7 +61,7 @@ func (r *Request) Validate() error {
 	return nil
 }
 
-func (c *CompletionResult) Validate() error {
+func (c CompletionResult) Validate() error {
 
 	if c.ShipmentID == "" {
 		return fmt.Errorf("shipment_id must not be empty")

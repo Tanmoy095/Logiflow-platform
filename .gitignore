@@ -30,3 +30,5 @@ Thumbs.db
 # Logs
 *.log
 deployment/helm/services/stream-ingestion/values-prod-secrets.yaml
+# Local project notes
+note.md
