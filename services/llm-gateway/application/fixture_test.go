@@ -5,6 +5,7 @@ package application_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,7 +44,7 @@ type shipmentEvidenceFixture struct {
 // loadShipmentFixture loads the deterministic shipment evidence fixture
 // from the stream-ingestion testdata directory.
 //
-// NOTE: The path is relative to the package directory. For a more robust
+// The path is relative to the package directory. For a more robust
 // CI setup, this could be resolved using runtime.Caller or a configurable
 // fixture root, but that is intentionally deferred for now.
 func loadShipmentFixture(t *testing.T) shipmentEvidenceFixture {
@@ -140,6 +141,7 @@ func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
 		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
 
+	// Verify the trusted result matches the original fixture identity.
 	if result.ShipmentID != fixture.ShipmentID {
 		t.Fatalf("result shipment_id = %q, want %q", result.ShipmentID, fixture.ShipmentID)
 	}
@@ -160,6 +162,9 @@ func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
 // TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID verifies that
 // a missing shipment identity is rejected at the application boundary
 // and no trusted result is fabricated.
+//
+// This test also confirms that the error is typed as a *domain.DomainError
+// with KindInvalidArgument, aligning with the Wednesday error taxonomy.
 func TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID(t *testing.T) {
 	fixture := loadShipmentFixture(t)
 	fixture.ShipmentID = "" // simulate broken fixture / missing identity
@@ -172,6 +177,15 @@ func TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID(t *testing.T)
 	result, err := service.Complete(context.Background(), req)
 	if err == nil {
 		t.Fatal("Complete() error = nil, want request validation error")
+	}
+
+	// Assert the error is a typed DomainError with KindInvalidArgument.
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindInvalidArgument {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindInvalidArgument)
 	}
 
 	assertNoTrustedResult(t, result)

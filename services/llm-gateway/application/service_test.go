@@ -1,3 +1,5 @@
+// services/llm-gateway/application/service_test.go
+
 package application_test
 
 import (
@@ -6,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/application"
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
@@ -13,10 +16,8 @@ import (
 )
 
 // validRequest returns the smallest request that satisfies the application
-// request contract.
-//
-// Keeping this helper centralized makes individual tests focus on the
-// behavior being tested rather than repeating unrelated setup.
+// request contract. Keeping this helper centralised makes individual tests
+// focus on the behaviour being tested rather than repeating setup.
 func validRequest() domain.Request {
 	return domain.Request{
 		ShipmentID:    "ship-123",
@@ -25,7 +26,7 @@ func validRequest() domain.Request {
 	}
 }
 
-// assertNoTrustedResult verifies a critical failure-path invariant:
+// assertNoTrustedResult verifies a critical failure‑path invariant:
 //
 //	When Complete returns an error, it must not return a partially populated
 //	CompletionResult that a caller could accidentally treat as trusted.
@@ -33,179 +34,120 @@ func validRequest() domain.Request {
 // CompletionResult contains a []string, so the struct itself is not directly
 // comparable with == or != in Go. We therefore check the semantic zero state
 // of each field explicitly.
-func assertNoTrustedResult(
-	t *testing.T,
-	result domain.CompletionResult,
-) {
+func assertNoTrustedResult(t *testing.T, result domain.CompletionResult) {
 	t.Helper()
 
 	if result.ShipmentID != "" {
-		t.Fatalf(
-			"error path returned trusted shipment_id %q",
-			result.ShipmentID,
-		)
+		t.Fatalf("error path returned trusted shipment_id %q", result.ShipmentID)
 	}
-
 	if result.Risk != "" {
-		t.Fatalf(
-			"error path returned trusted risk %q",
-			result.Risk,
-		)
+		t.Fatalf("error path returned trusted risk %q", result.Risk)
 	}
-
 	if result.Confidence != 0 {
-		t.Fatalf(
-			"error path returned trusted confidence %v",
-			result.Confidence,
-		)
+		t.Fatalf("error path returned trusted confidence %v", result.Confidence)
 	}
-
 	if len(result.Reasons) != 0 {
-		t.Fatalf(
-			"error path returned trusted reasons %v",
-			result.Reasons,
-		)
+		t.Fatalf("error path returned trusted reasons %v", result.Reasons)
 	}
 }
 
-// newServiceWithResponse constructs the application using the deterministic
-// fake provider.
+// newServiceWithResponse constructs the application service with a fake
+// provider that immediately returns the given raw JSON response.
 //
 // This is Dependency Injection in practice: the application receives a
 // Provider implementation rather than constructing one itself.
 func newServiceWithResponse(response string) *application.Service {
 	fake := provider.NewFakeProvider(response)
-
 	return application.NewService(fake)
 }
 
+// --- Monday / Tuesday tests ---
+
+// TestServiceComplete_ValidResponse verifies that a well‑formed provider
+// response passes all validation stages and yields a trusted result.
 func TestServiceComplete_ValidResponse(t *testing.T) {
 	const response = `{
 		"shipment_id": "ship-123",
 		"risk": "high_risk",
 		"confidence": 0.94,
-		"reasons": [
-			"Customs clearance delay detected"
-		]
+		"reasons": ["Customs clearance delay detected"]
 	}`
 
 	service := newServiceWithResponse(response)
-
-	result, err := service.Complete(
-		context.Background(),
-		validRequest(),
-	)
-
+	result, err := service.Complete(context.Background(), validRequest())
 	if err != nil {
-		t.Fatalf(
-			"Complete() returned unexpected error: %v",
-			err,
-		)
+		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
 
-	// A result is trusted only after syntax, schema, identity, and
-	// domain validation have all succeeded.
+	// Verify that the trusted result contains the expected values.
 	if result.ShipmentID != "ship-123" {
-		t.Fatalf(
-			"ShipmentID = %q, want %q",
-			result.ShipmentID,
-			"ship-123",
-		)
+		t.Fatalf("ShipmentID = %q, want %q", result.ShipmentID, "ship-123")
 	}
-
 	if result.Risk != domain.RiskHighRisk {
-		t.Fatalf(
-			"Risk = %q, want %q",
-			result.Risk,
-			domain.RiskHighRisk,
-		)
+		t.Fatalf("Risk = %q, want %q", result.Risk, domain.RiskHighRisk)
 	}
-
 	if result.Confidence != 0.94 {
-		t.Fatalf(
-			"Confidence = %v, want %v",
-			result.Confidence,
-			0.94,
-		)
+		t.Fatalf("Confidence = %v, want 0.94", result.Confidence)
 	}
-
-	if len(result.Reasons) != 1 {
-		t.Fatalf(
-			"Reasons length = %d, want 1",
-			len(result.Reasons),
-		)
-	}
-
-	if result.Reasons[0] != "Customs clearance delay detected" {
-		t.Fatalf(
-			"Reasons[0] = %q, want %q",
-			result.Reasons[0],
-			"Customs clearance delay detected",
-		)
+	if len(result.Reasons) != 1 || result.Reasons[0] != "Customs clearance delay detected" {
+		t.Fatalf("Reasons = %v, want exactly one expected reason", result.Reasons)
 	}
 }
 
+// TestServiceComplete_MalformedJSON ensures that syntactically invalid
+// provider output is rejected as a validation failure, not a provider error.
 func TestServiceComplete_MalformedJSON(t *testing.T) {
-	// Deliberately malformed provider output.
-	//
-	// This proves that raw provider output is never trusted directly.
 	service := newServiceWithResponse(`{risk:`)
-
-	result, err := service.Complete(
-		context.Background(),
-		validRequest(),
-	)
+	result, err := service.Complete(context.Background(), validRequest())
 
 	if err == nil {
-		t.Fatal(
-			"Complete() error = nil, want malformed JSON error",
-		)
+		t.Fatal("Complete() error = nil, want malformed JSON error")
 	}
 
-	// Typed ParseError is intentionally deferred to Wednesday.
-	if !strings.Contains(err.Error(), "parse provider response") {
-		t.Fatalf(
-			"error = %q, want parse provider response error",
-			err,
-		)
+	// The error must be a *domain.DomainError with KindValidationFailed.
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindValidationFailed {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindValidationFailed)
 	}
 
 	assertNoTrustedResult(t, result)
 }
 
+// TestServiceComplete_ProviderError verifies that an operational failure
+// (e.g., connection refused) is classified as ProviderUnavailable and the
+// original error remains reachable via errors.Is.
 func TestServiceComplete_ProviderError(t *testing.T) {
 	expectedErr := errors.New("provider unavailable")
-
-	fake := &provider.FakeProvider{
-		Err: expectedErr,
-	}
-
+	fake := &provider.FakeProvider{Err: expectedErr}
 	service := application.NewService(fake)
 
-	result, err := service.Complete(
-		context.Background(),
-		validRequest(),
-	)
-
+	result, err := service.Complete(context.Background(), validRequest())
 	if err == nil {
-		t.Fatal(
-			"Complete() error = nil, want provider error",
-		)
+		t.Fatal("Complete() error = nil, want provider error")
 	}
 
-	// Preserve provider error identity so later typed/wrapped errors can
-	// still be classified with errors.Is/errors.As.
+	// The error must be a *domain.DomainError with kind ProviderUnavailable.
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindProviderUnavailable {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindProviderUnavailable)
+	}
+
+	// The original cause must be preserved so callers can still match it.
 	if !errors.Is(err, expectedErr) {
-		t.Fatalf(
-			"Complete() error = %v, want provider error %v",
-			err,
-			expectedErr,
-		)
+		t.Fatalf("error does not wrap original provider error: %v", err)
 	}
 
 	assertNoTrustedResult(t, result)
 }
 
+// TestServiceComplete_RequestValidation ensures that invalid requests
+// (missing shipment ID or prompt) are rejected before the provider is called.
 func TestServiceComplete_RequestValidation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -213,40 +155,30 @@ func TestServiceComplete_RequestValidation(t *testing.T) {
 	}{
 		{
 			name: "missing shipment id",
-			req: domain.Request{
-				Prompt:        "Analyze shipment",
-				PromptVersion: "v1",
-			},
+			req:  domain.Request{Prompt: "Analyze shipment", PromptVersion: "v1"},
 		},
 		{
 			name: "missing prompt",
-			req: domain.Request{
-				ShipmentID:    "ship-123",
-				PromptVersion: "v1",
-			},
+			req:  domain.Request{ShipmentID: "ship-123", PromptVersion: "v1"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// The provider response is valid, but request validation must
-			// reject the call before provider execution.
-			service := newServiceWithResponse(`{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"confidence": 0.95,
-				"reasons": ["delay"]
-			}`)
-
-			result, err := service.Complete(
-				context.Background(),
-				tt.req,
-			)
-
+			// reject the call before any provider interaction.
+			service := newServiceWithResponse(`{"shipment_id":"ship-123","risk":"high_risk","confidence":0.95,"reasons":["delay"]}`)
+			result, err := service.Complete(context.Background(), tt.req)
 			if err == nil {
-				t.Fatal(
-					"Complete() error = nil, want request validation error",
-				)
+				t.Fatal("Complete() error = nil, want request validation error")
+			}
+
+			var domainErr *domain.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("error = %v, want DomainError", err)
+			}
+			if domainErr.Kind != domain.KindInvalidArgument {
+				t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindInvalidArgument)
 			}
 
 			assertNoTrustedResult(t, result)
@@ -254,65 +186,33 @@ func TestServiceComplete_RequestValidation(t *testing.T) {
 	}
 }
 
+// TestServiceComplete_SchemaValidation verifies that missing required fields
+// in the provider response are classified as validation failures.
 func TestServiceComplete_SchemaValidation(t *testing.T) {
 	tests := []struct {
 		name     string
 		response string
 	}{
-		{
-			name: "missing shipment_id",
-			response: `{
-				"risk": "high_risk",
-				"confidence": 0.95,
-				"reasons": ["delay"]
-			}`,
-		},
-		{
-			name: "missing risk",
-			response: `{
-				"shipment_id": "ship-123",
-				"confidence": 0.95,
-				"reasons": ["delay"]
-			}`,
-		},
-		{
-			name: "missing confidence",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"reasons": ["delay"]
-			}`,
-		},
-		{
-			name: "missing reasons",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"confidence": 0.95
-			}`,
-		},
+		{"missing shipment_id", `{"risk":"high_risk","confidence":0.95,"reasons":["delay"]}`},
+		{"missing risk", `{"shipment_id":"ship-123","confidence":0.95,"reasons":["delay"]}`},
+		{"missing confidence", `{"shipment_id":"ship-123","risk":"high_risk","reasons":["delay"]}`},
+		{"missing reasons", `{"shipment_id":"ship-123","risk":"high_risk","confidence":0.95}`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := newServiceWithResponse(tt.response)
-
-			result, err := service.Complete(
-				context.Background(),
-				validRequest(),
-			)
-
+			result, err := service.Complete(context.Background(), validRequest())
 			if err == nil {
-				t.Fatal(
-					"Complete() error = nil, want schema validation error",
-				)
+				t.Fatal("Complete() error = nil, want schema validation error")
 			}
 
-			if !strings.Contains(err.Error(), "schema validation") {
-				t.Fatalf(
-					"error = %q, want schema validation error",
-					err,
-				)
+			var domainErr *domain.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("error = %v, want DomainError", err)
+			}
+			if domainErr.Kind != domain.KindValidationFailed {
+				t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindValidationFailed)
 			}
 
 			assertNoTrustedResult(t, result)
@@ -320,71 +220,34 @@ func TestServiceComplete_SchemaValidation(t *testing.T) {
 	}
 }
 
+// TestServiceComplete_DomainValidation ensures that syntactically valid
+// responses that violate business rules (confidence bounds, risk enum,
+// high‑risk reasons) are rejected as validation failures.
 func TestServiceComplete_DomainValidation(t *testing.T) {
 	tests := []struct {
 		name     string
 		response string
 	}{
-		{
-			name: "confidence above upper bound",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"confidence": 1.7,
-				"reasons": ["invalid confidence"]
-			}`,
-		},
-		{
-			name: "confidence below lower bound",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"confidence": -0.1,
-				"reasons": ["invalid confidence"]
-			}`,
-		},
-		{
-			name: "unsupported risk",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "banana",
-				"confidence": 0.95,
-				"reasons": ["unsupported classification"]
-			}`,
-		},
-		{
-			name: "high risk with empty reasons",
-			response: `{
-				"shipment_id": "ship-123",
-				"risk": "high_risk",
-				"confidence": 0.95,
-				"reasons": []
-			}`,
-		},
+		{"confidence above upper bound", `{"shipment_id":"ship-123","risk":"high_risk","confidence":1.7,"reasons":["invalid confidence"]}`},
+		{"confidence below lower bound", `{"shipment_id":"ship-123","risk":"high_risk","confidence":-0.1,"reasons":["invalid confidence"]}`},
+		{"unsupported risk", `{"shipment_id":"ship-123","risk":"banana","confidence":0.95,"reasons":["unsupported classification"]}`},
+		{"high risk with empty reasons", `{"shipment_id":"ship-123","risk":"high_risk","confidence":0.95,"reasons":[]}`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := newServiceWithResponse(tt.response)
-
-			result, err := service.Complete(
-				context.Background(),
-				validRequest(),
-			)
-
+			result, err := service.Complete(context.Background(), validRequest())
 			if err == nil {
-				t.Fatal(
-					"Complete() error = nil, want domain validation error",
-				)
+				t.Fatal("Complete() error = nil, want domain validation error")
 			}
 
-			// All cases in this table are syntactically and structurally
-			// valid. Their failure must therefore come from business rules.
-			if strings.Contains(err.Error(), "schema validation") {
-				t.Fatalf(
-					"error = %q, want domain validation failure",
-					err,
-				)
+			var domainErr *domain.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("error = %v, want DomainError", err)
+			}
+			if domainErr.Kind != domain.KindValidationFailed {
+				t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindValidationFailed)
 			}
 
 			assertNoTrustedResult(t, result)
@@ -392,69 +255,34 @@ func TestServiceComplete_DomainValidation(t *testing.T) {
 	}
 }
 
+// TestServiceComplete_NoRiskMayHaveEmptyReasons confirms that the business
+// rule “high_risk => at least one reason” does not incorrectly require
+// reasons for no_risk results.
 func TestServiceComplete_NoRiskMayHaveEmptyReasons(t *testing.T) {
-	// This test is important because the domain rule is NOT:
-	//
-	//	reasons must always be non-empty
-	//
-	// The documented rule is:
-	//
-	//	high_risk => at least one reason
-	//
-	// Therefore no_risk with an explicitly present empty reasons array
-	// should be a valid result.
-	service := newServiceWithResponse(`{
-		"shipment_id": "ship-123",
-		"risk": "no_risk",
-		"confidence": 0.99,
-		"reasons": []
-	}`)
-
-	result, err := service.Complete(
-		context.Background(),
-		validRequest(),
-	)
-
+	service := newServiceWithResponse(`{"shipment_id":"ship-123","risk":"no_risk","confidence":0.99,"reasons":[]}`)
+	result, err := service.Complete(context.Background(), validRequest())
 	if err != nil {
-		t.Fatalf(
-			"Complete() returned unexpected error: %v",
-			err,
-		)
+		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
 
 	if result.Risk != domain.RiskNoRisk {
-		t.Fatalf(
-			"Risk = %q, want %q",
-			result.Risk,
-			domain.RiskNoRisk,
-		)
+		t.Fatalf("Risk = %q, want %q", result.Risk, domain.RiskNoRisk)
 	}
-
 	if len(result.Reasons) != 0 {
-		t.Fatalf(
-			"Reasons = %v, want empty reasons",
-			result.Reasons,
-		)
+		t.Fatalf("Reasons = %v, want empty", result.Reasons)
 	}
 }
 
+// TestCompletionResultValidate_RejectsNonFiniteConfidence directly tests the
+// domain validation rule that confidence must be a finite number.
 func TestCompletionResultValidate_RejectsNonFiniteConfidence(t *testing.T) {
 	tests := []struct {
 		name       string
 		confidence float64
 	}{
-		{
-			name:       "NaN",
-			confidence: math.NaN(),
-		},
-		{
-			name:       "positive infinity",
-			confidence: math.Inf(1),
-		},
-		{
-			name:       "negative infinity",
-			confidence: math.Inf(-1),
-		},
+		{"NaN", math.NaN()},
+		{"positive infinity", math.Inf(1)},
+		{"negative infinity", math.Inf(-1)},
 	}
 
 	for _, tt := range tests {
@@ -465,59 +293,154 @@ func TestCompletionResultValidate_RejectsNonFiniteConfidence(t *testing.T) {
 				Confidence: tt.confidence,
 				Reasons:    []string{},
 			}
-
 			err := result.Validate()
-
 			if err == nil {
-				t.Fatal(
-					"Validate() error = nil, want non-finite confidence error",
-				)
+				t.Fatal("Validate() error = nil, want non-finite confidence error")
 			}
-
-			if !strings.Contains(
-				err.Error(),
-				"confidence must be a finite number",
-			) {
-				t.Fatalf(
-					"error = %q, want finite-confidence validation error",
-					err,
-				)
+			if !strings.Contains(err.Error(), "confidence must be a finite number") {
+				t.Fatalf("error = %q, want finite-confidence validation error", err)
 			}
 		})
 	}
 }
 
+// TestServiceComplete_ShipmentIdentityMismatch ensures that a provider
+// response for a different shipment is rejected even if everything else
+// is valid.
 func TestServiceComplete_ShipmentIdentityMismatch(t *testing.T) {
-	// The response is valid JSON, has the correct schema, and contains
-	// valid domain values — but it belongs to another shipment.
-	//
-	// This is a cross-entity integrity failure.
-	service := newServiceWithResponse(`{
-		"shipment_id": "ship-999",
-		"risk": "high_risk",
-		"confidence": 0.95,
-		"reasons": ["delay"]
-	}`)
-
-	result, err := service.Complete(
-		context.Background(),
-		validRequest(),
-	)
-
+	service := newServiceWithResponse(`{"shipment_id":"ship-999","risk":"high_risk","confidence":0.95,"reasons":["delay"]}`)
+	result, err := service.Complete(context.Background(), validRequest())
 	if err == nil {
-		t.Fatal(
-			"Complete() error = nil, want shipment identity mismatch",
-		)
+		t.Fatal("Complete() error = nil, want shipment identity mismatch")
 	}
 
-	if !strings.Contains(
-		err.Error(),
-		"shipment_id mismatch",
-	) {
-		t.Fatalf(
-			"error = %q, want shipment identity mismatch",
-			err,
-		)
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindValidationFailed {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindValidationFailed)
+	}
+
+	assertNoTrustedResult(t, result)
+}
+
+// --- ADDED tests: context & typed errors ---
+
+// TestServiceComplete_ContextTimeout verifies that when the caller's context
+// deadline expires, the provider cancels the operation and the service
+// returns a typed ProviderTimeout error without a trusted result.
+//
+// The fake provider is configured to wait longer than the deadline, so the
+// test deterministically triggers a deadline exceeded scenario.
+func TestServiceComplete_ContextTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	fake := &provider.FakeProvider{
+		Response: validFixtureProviderResponse, // defined in fixture_test.go
+		Delay:    200 * time.Millisecond,       // exceeds deadline
+	}
+	service := application.NewService(fake)
+
+	result, err := service.Complete(ctx, validRequest())
+	if err == nil {
+		t.Fatal("Complete() error = nil, want timeout error")
+	}
+
+	// Error must be a *domain.DomainError with kind ProviderTimeout.
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindProviderTimeout {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindProviderTimeout)
+	}
+
+	// The underlying cause should be context.DeadlineExceeded, so callers
+	// can still use errors.Is with the standard context error.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error does not wrap context.DeadlineExceeded: %v", err)
+	}
+
+	assertNoTrustedResult(t, result)
+}
+
+// TestServiceComplete_ExplicitCancellation checks that when the caller cancels
+// the context while the provider is still working, the service returns a
+// typed RequestCanceled error and no trusted result.
+//
+// This test uses a goroutine and a channel to simulate an in‑flight request
+// and cancel it at a deterministic moment.
+func TestServiceComplete_ExplicitCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	fake := &provider.FakeProvider{
+		Response: validFixtureProviderResponse,
+		Delay:    time.Second, // long enough to be canceled before completion
+	}
+	service := application.NewService(fake)
+
+	type result struct {
+		completion domain.CompletionResult
+		err        error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		r, err := service.Complete(ctx, validRequest())
+		resultCh <- result{r, err}
+	}()
+
+	// Give the goroutine a moment to start, then cancel.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	res := <-resultCh
+
+	if res.err == nil {
+		t.Fatal("Complete() error = nil, want cancellation error")
+	}
+
+	var domainErr *domain.DomainError
+	if !errors.As(res.err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", res.err)
+	}
+	if domainErr.Kind != domain.KindRequestCanceled {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindRequestCanceled)
+	}
+
+	if !errors.Is(res.err, context.Canceled) {
+		t.Fatalf("error does not wrap context.Canceled: %v", res.err)
+	}
+
+	assertNoTrustedResult(t, res.completion)
+}
+
+// TestServiceComplete_ProviderErrorWrapped verifies that an operational
+// provider error is classified as ProviderUnavailable and that the original
+// error remains reachable via errors.Is. This is important because future
+// resilience policies (retry, fallback) will inspect these typed errors.
+func TestServiceComplete_ProviderErrorWrapped(t *testing.T) {
+	baseErr := errors.New("connection refused")
+	fake := &provider.FakeProvider{Err: baseErr}
+	service := application.NewService(fake)
+
+	result, err := service.Complete(context.Background(), validRequest())
+	if err == nil {
+		t.Fatal("Complete() error = nil, want provider error")
+	}
+
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindProviderUnavailable {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindProviderUnavailable)
+	}
+
+	if !errors.Is(err, baseErr) {
+		t.Fatalf("error does not wrap original provider error: %v", err)
 	}
 
 	assertNoTrustedResult(t, result)

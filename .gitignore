@@ -32,3 +32,6 @@ Thumbs.db
 deployment/helm/services/stream-ingestion/values-prod-secrets.yaml
 # Local project notes
 note.md
+
+# Local daily notes
+docs/daily/

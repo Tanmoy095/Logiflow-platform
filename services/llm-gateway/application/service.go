@@ -1,10 +1,11 @@
-//service/llm-gateway/application/service.go
+// services/llm-gateway/application/service.go
 
 package application
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
@@ -15,61 +16,83 @@ type Service struct {
 }
 
 func NewService(provider Provider) *Service {
-	return &Service{
-		provider: provider,
-	}
+	return &Service{provider: provider}
 }
 
-// Complete executes the LogiFlow AI-completion use case:
+// Complete executes the LogiFlow AI‑completion use case.
 //
-//  1. Validate request
-//  2. Call Provider
-//  3. Parse raw output
-//  4. Validate provider schema
-//  5. Construct candidate domain result
-//  6. Validate business/domain invariants
-//  7. Return trusted CompletionResult
+// Steps:
+//  1. Validate request (domain invariants).
+//  2. Call Provider with the caller's context.
+//  3. Classify provider errors (timeout, canceled, unavailable).
+//  4. Parse and validate provider output.
+//  5. Check shipment identity.
+//  6. Validate business rules.
+//  7. Return trusted CompletionResult or a typed DomainError.
 //
-// The provider's raw response remains untrusted until all validation passes.
+// The context is passed unchanged to the provider, so the provider
+// shares the same lifetime as this operation.
+
 func (s *Service) Complete(
 	ctx context.Context,
 	req domain.Request,
 ) (domain.CompletionResult, error) {
 
 	// Boundary validation: can this request be executed?
+	//Request validation → invalid argument.
 	if err := req.Validate(); err != nil {
-		return domain.CompletionResult{}, err
+		return domain.CompletionResult{}, domain.NewInvalidArgumentError(err.Error())
 	}
 
 	// The application depends only on the Provider abstraction.
+
+	// Call provider with the same context.
 	raw, err := s.provider.Complete(ctx, req)
 	if err != nil {
-		return domain.CompletionResult{}, err
+		//classify operational errors
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return domain.CompletionResult{}, domain.NewProviderTimeoutError(
+				"provider did not respond before deadline",
+				err,
+			)
+		case errors.Is(err, context.Canceled):
+			return domain.CompletionResult{}, domain.NewRequestCanceledError(
+				"operation canceled by caller",
+				err,
+			)
+		default:
+			return domain.CompletionResult{}, domain.NewProviderUnavailableError(
+				"provider call failed",
+				err,
+			)
+		}
 	}
 
 	// Convert raw provider data into a candidate result.
 	result, err := parseProviderResponse(raw)
 	if err != nil {
-		return domain.CompletionResult{}, err
+		// Parsing/schema errors are validation failures, not operational.
+		return domain.CompletionResult{}, domain.NewValidationFailedError(
+			err.Error(),
+		)
 	}
 
 	// Cross-entity consistency check.
 	//
 	// A valid JSON response for the wrong shipment is still invalid.
 	if result.ShipmentID != req.ShipmentID {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"shipment_id mismatch: requested %q, returned %q",
-			req.ShipmentID,
-			result.ShipmentID,
+		return domain.CompletionResult{}, domain.NewValidationFailedError(
+			fmt.Sprintf("shipment_id mismatch: requested %q, returned %q",
+				req.ShipmentID, result.ShipmentID),
 		)
 	}
 
-	// Domain validation is the final trust gate.
 	if err := result.Validate(); err != nil {
-		return domain.CompletionResult{}, err
+		return domain.CompletionResult{}, domain.NewValidationFailedError(err.Error())
 	}
 
-	// Only now does the result become trusted.
+	// Step 7: success – trusted result.
 	return result, nil
 }
 
