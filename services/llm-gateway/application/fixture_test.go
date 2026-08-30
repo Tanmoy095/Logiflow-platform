@@ -1,4 +1,4 @@
-//services/llm-gateway/application/fixture_test.go
+// services/llm-gateway/application/fixture_test.go
 
 package application_test
 
@@ -42,6 +42,10 @@ type shipmentEvidenceFixture struct {
 
 // loadShipmentFixture loads the deterministic shipment evidence fixture
 // from the stream-ingestion testdata directory.
+//
+// NOTE: The path is relative to the package directory. For a more robust
+// CI setup, this could be resolved using runtime.Caller or a configurable
+// fixture root, but that is intentionally deferred for now.
 func loadShipmentFixture(t *testing.T) shipmentEvidenceFixture {
 	t.Helper()
 
@@ -118,6 +122,15 @@ func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
 	fixture := loadShipmentFixture(t)
 
 	req := fixtureToRequest(fixture)
+
+	// Explicitly confirm that the adapter preserves shipment identity.
+	if req.ShipmentID != fixture.ShipmentID {
+		t.Fatalf(
+			"adapter changed shipment identity: fixture = %q, request = %q",
+			fixture.ShipmentID,
+			req.ShipmentID,
+		)
+	}
 
 	fake := provider.NewFakeProvider(validFixtureProviderResponse)
 	service := application.NewService(fake)
