@@ -2,7 +2,10 @@
 
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 /**
 What business concepts must exist even if OpenAI disappears tomorrow?
@@ -62,16 +65,30 @@ func (r Request) Validate() error {
 }
 
 func (c CompletionResult) Validate() error {
-
 	if c.ShipmentID == "" {
-		return fmt.Errorf("shipment_id must not be empty")
+		return fmt.Errorf(
+			"shipment_id must not be empty",
+		)
 	}
 
 	switch c.Risk {
 	case RiskNoRisk, RiskMediumRisk, RiskHighRisk:
-		// valid risk values
+		// Supported business value.
 	default:
-		return fmt.Errorf("invalid risk value: %s", c.Risk)
+		return fmt.Errorf(
+			"invalid risk value: %q",
+			c.Risk,
+		)
+	}
+
+	// Protect the domain invariant independently of the transport/parser.
+	//
+	// JSON itself does not normally encode NaN or +/-Inf, but this domain
+	// object may be constructed from Go code or another future adapter.
+	if math.IsNaN(c.Confidence) || math.IsInf(c.Confidence, 0) {
+		return fmt.Errorf(
+			"confidence must be a finite number",
+		)
 	}
 
 	if c.Confidence < 0 || c.Confidence > 1 {
@@ -80,10 +97,15 @@ func (c CompletionResult) Validate() error {
 		)
 	}
 
-	if len(c.Reasons) == 0 {
-		return fmt.Errorf("reasons must not be empty")
+	// Cross-field business invariant:
+	//
+	// High-risk classifications require evidence explaining why the
+	// shipment was classified as high risk.
+	if c.Risk == RiskHighRisk && len(c.Reasons) == 0 {
+		return fmt.Errorf(
+			"high_risk requires at least one reason",
+		)
 	}
 
 	return nil
-
 }
