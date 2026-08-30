@@ -19,8 +19,9 @@ import (
 // behavior being tested rather than repeating unrelated setup.
 func validRequest() domain.Request {
 	return domain.Request{
-		ShipmentID: "ship-123",
-		Prompt:     "Analyze shipment risk",
+		ShipmentID:    "ship-123",
+		Prompt:        "Analyze shipment risk",
+		PromptVersion: "v1",
 	}
 }
 
@@ -213,13 +214,15 @@ func TestServiceComplete_RequestValidation(t *testing.T) {
 		{
 			name: "missing shipment id",
 			req: domain.Request{
-				Prompt: "Analyze shipment",
+				Prompt:        "Analyze shipment",
+				PromptVersion: "v1",
 			},
 		},
 		{
 			name: "missing prompt",
 			req: domain.Request{
-				ShipmentID: "ship-123",
+				ShipmentID:    "ship-123",
+				PromptVersion: "v1",
 			},
 		},
 	}

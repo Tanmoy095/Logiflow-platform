@@ -135,3 +135,18 @@ clean: dev-down ## Remove generated files and cluster
 .PHONY: generate-service
 generate-service: ## Generate a new service from the template
 	@bash scripts/dev/generate-service.sh
+
+
+# Run LLM gateway tests (optionally filter by name)
+# Usage:
+#   make test-llm-gateway
+#   make test-llm-gateway TEST_NAME=TestServiceComplete_ShipmentEvidenceFixture
+.PHONY: test-llm-gateway
+test-llm-gateway:
+	@./scripts/test/test-llm-gateway.sh $(TEST_NAME)
+# Run all service tests (optionally filter by name)
+# Usage:
+#   make test-services
+.PHONY: test-services
+test-services:
+	@go test ./services/...
