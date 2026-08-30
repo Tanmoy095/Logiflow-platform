@@ -366,18 +366,20 @@ func TestServiceComplete_ContextTimeout(t *testing.T) {
 	assertNoTrustedResult(t, result)
 }
 
-// TestServiceComplete_ExplicitCancellation checks that when the caller cancels
-// the context while the provider is still working, the service returns a
-// typed RequestCanceled error and no trusted result.
+// TestServiceComplete_ExplicitCancellation verifies that when the caller
+// cancels the context while the provider is in‑flight, the service returns
+// a typed RequestCanceled error and no trusted result.
 //
-// This test uses a goroutine and a channel to simulate an in‑flight request
-// and cancel it at a deterministic moment.
+// This test synchronizes with the provider using the Started channel,
+// ensuring the provider is actually blocked before cancellation occurs.
 func TestServiceComplete_ExplicitCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	started := make(chan struct{})
 	fake := &provider.FakeProvider{
 		Response: validFixtureProviderResponse,
 		Delay:    time.Second, // long enough to be canceled before completion
+		Started:  started,
 	}
 	service := application.NewService(fake)
 
@@ -392,9 +394,14 @@ func TestServiceComplete_ExplicitCancellation(t *testing.T) {
 		resultCh <- result{r, err}
 	}()
 
-	// Give the goroutine a moment to start, then cancel.
-	time.Sleep(20 * time.Millisecond)
-	cancel()
+	// Wait until the provider signals it has started waiting.
+	select {
+	case <-started:
+		// Provider is now blocked; cancel it.
+		cancel()
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("provider did not start within expected time")
+	}
 
 	res := <-resultCh
 
@@ -415,6 +422,36 @@ func TestServiceComplete_ExplicitCancellation(t *testing.T) {
 	}
 
 	assertNoTrustedResult(t, res.completion)
+}
+
+// TestServiceComplete_ContextAlreadyCanceled verifies that if the context
+// is canceled before the provider is called, the service returns a typed
+// RequestCanceled error and no trusted result.
+func TestServiceComplete_ContextAlreadyCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	fake := provider.NewFakeProvider(validFixtureProviderResponse)
+	service := application.NewService(fake)
+
+	result, err := service.Complete(ctx, validRequest())
+	if err == nil {
+		t.Fatal("Complete() error = nil, want cancellation error")
+	}
+
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v, want DomainError", err)
+	}
+	if domainErr.Kind != domain.KindRequestCanceled {
+		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindRequestCanceled)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error does not wrap context.Canceled: %v", err)
+	}
+
+	assertNoTrustedResult(t, result)
 }
 
 // TestServiceComplete_ProviderErrorWrapped verifies that an operational

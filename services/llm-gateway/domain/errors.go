@@ -1,6 +1,6 @@
-package domain
-
 // services/llm-gateway/domain/errors.go
+
+package domain
 
 import (
 	"fmt"
@@ -44,10 +44,8 @@ const (
 //   - Message: human‑readable context.
 //   - Cause: the underlying error that triggered this failure (may be nil).
 //
-// This design allows callers to use errors.Is/errors.As to both:
-//   - check for a specific sentinel error (via Is)
-//   - extract the typed error and its Kind (via As)
-//
+// The fields are plain values; pointers are unnecessary because the zero
+// values (empty string, nil error) already express "not supplied".
 // The struct is immutable after construction – no shared mutable state.
 type DomainError struct {
 	Kind    Kind
@@ -74,10 +72,6 @@ func (e *DomainError) Unwrap() error {
 //
 //	var ErrTimeout = &DomainError{Kind: KindProviderTimeout}
 //	errors.Is(err, ErrTimeout) // true if err's Kind matches
-
-//Unwrap gives Go the keys to open the box and look inside.
-
-// Is tells Go to stop comparing the whole box, and just compare the label (Kind) on the box instead.
 func (e *DomainError) Is(target error) bool {
 	t, ok := target.(*DomainError)
 	if !ok {
