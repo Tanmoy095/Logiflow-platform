@@ -1,0 +1,29 @@
+{
+  "shipment_id": "ship-123",
+  "carrier": "DHL",
+  "origin": "Dhaka",
+  "destination": "Singapore",
+  "invoice": {
+    "invoice_id": "INV-2026-001",
+    "amount_usd": 1840.5,
+    "currency": "USD"
+  },
+  "shipment_status": "in_transit",
+  "expected_delivery_date": "2026-08-29",
+  "events": [
+    {
+      "timestamp": "2026-08-27T09:30:00Z",
+      "type": "customs_delay",
+      "description": "Customs clearance document requires additional review"
+    },
+    {
+      "timestamp": "2026-08-28T14:00:00Z",
+      "type": "carrier_update",
+      "description": "Shipment remains at customs facility"
+    }
+  ],
+  "evidence": [
+    "Carrier reported customs clearance delay",
+    "Expected delivery date has been exceeded"
+  ]
+}

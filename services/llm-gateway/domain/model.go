@@ -40,8 +40,9 @@ const (
 // Request represents the business request to perform a controlled
 // AI completion for a specific shipment.
 type Request struct {
-	ShipmentID string
-	Prompt     string
+	ShipmentID    string
+	Prompt        string
+	PromptVersion string // Version of the prompt template (behavior contract).
 }
 
 // CompletionResult is the trusted representation of an AI completion.
