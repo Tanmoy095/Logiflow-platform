@@ -10,6 +10,19 @@ It provides a **Golden Path** for building, deploying, and operating microservic
 
 > **For recruiters & hiring managers:** This project demonstrates the ability to design and implement a complete internal platform, including Helm library charts, opinionated health-check policies, multi-environment strategies, automated service scaffolding, DDD-enforced code skeletons, and CI-ready workflows.
 
+## What Has Been Delivered
+
+The latest implementation work moves the LLM Gateway from a runtime scaffold toward a testable, production-shaped policy boundary:
+
+- **Typed failure taxonomy:** invalid requests, provider timeouts, provider unavailability, caller cancellation, validation failures, and unexpected internal errors are represented as stable domain error kinds.
+- **Cancellation and deadline propagation:** the gateway passes the request context to the provider and classifies timeout and cancellation outcomes without confusing them with generic provider failures.
+- **Trust-oriented validation:** provider output is treated as untrusted and must pass syntax, schema, and domain-invariant validation before becoming a trusted `CompletionResult`.
+- **Explicit refusal behavior:** malformed or semantically invalid model output is rejected rather than silently repaired or passed to automation.
+- **Execution metadata:** each completion records a correlation ID, provider, prompt version, status, error kind, provider latency, validation latency, and total gateway latency.
+- **Environment-aware delivery:** the gateway now has dev, staging, and production Helm overlays, secure provider-key injection, standard probes and resources, and Argo CD child Applications managed through the app-of-apps pattern.
+
+These capabilities are covered by focused Go tests and operational guidance in [docs/runbooks/llm-gateway.md](docs/runbooks/llm-gateway.md). Provider adapters, shared budget enforcement, fallback routing, and asynchronous usage accounting remain planned integrations rather than claims of the current runtime.
+
 ## High-Level Architecture
 
 ```mermaid
@@ -180,9 +193,9 @@ The gateway should expose telemetry that separates external provider latency fro
 
 ### Current Implementation And Plan
 
-The current implementation is intentionally deploy-first rather than feature-complete. It provides a Go process that listens on `PORT` (default `8080`), serves `/healthz`, `/startupz`, and `/live`, and shuts down gracefully on `SIGINT` or `SIGTERM`. It is packaged with `build/Dockerfile.llm-gateway` and deployed through `deployment/helm/services/llm-gateway/`.
+The current implementation is intentionally deploy-first rather than feature-complete. It provides a Go process that listens on `PORT` (default `8080`), serves `/healthz`, `/startupz`, and `/live`, and shuts down gracefully on `SIGINT` or `SIGTERM`. Its application service now validates requests before provider work, propagates cancellation, classifies provider failures with typed errors, runs the syntax/schema/domain validation chain, refuses invalid results, and returns execution metadata with decomposed latency measurements. It is packaged with `build/Dockerfile.llm-gateway` and deployed through `deployment/helm/services/llm-gateway/`.
 
-The DDD folders, provider adapters, Redis ports, Kafka ports, gRPC handlers, validation policies, circuit breakers, fallbacks, and telemetry integrations are the next implementation stages. The full design explains the intended contracts and trade-offs without presenting planned behavior as already implemented.
+Provider adapters, Redis budget and rate-limit enforcement, Kafka usage events, gRPC handlers, circuit breakers, fallback routing, and telemetry export are the next implementation stages. The full design explains the intended contracts and trade-offs without presenting planned behavior as already implemented.
 
 For the complete LLM Gateway system design, including DDD boundaries, request flows, CAP and Redis decisions, timeout and circuit-breaker behavior, fallback-versus-refusal policy, security, observability, deployment, testing, and decision trade-offs, see [services/llm-gateway/System_Design.md](services/llm-gateway/System_Design.md). The original HLD source is available at [services/llm-gateway/LogiFlow\_ LLM_GATEWAY_HLD.pdf](services/llm-gateway/LogiFlow_%20LLM_GATEWAY_HLD.pdf).
 
@@ -195,13 +208,19 @@ flowchart TB
 	dev[Developer or AI Agent] --> pr[Pull Request]
 	pr --> ci[CI Validation]
 	ci --> merge[Merge to main]
-	merge --> argocd[Argo CD]
-	argocd --> reconcile[Compare desired vs live state]
+	merge --> git[Git repository]
+	git --> parent[Parent Application]
+	parent --> children[Child Applications in apps-* folders]
+	children --> helm[Render Helm chart with environment values]
+	helm --> reconcile[Compare desired vs live state]
 	reconcile --> cluster[Kubernetes Cluster]
 	cluster --> heal[Self-heal and drift correction]
+	values[Chart or values change] --> git
+	app[New or changed child Application YAML] --> git
+	app -. parent creates or updates child .-> children
 ```
 
-The practical result is simple: developers change Git, CI validates the change, Argo CD applies it, and the cluster converges back to what is declared in source control. Manual production edits are treated as drift, not as the source of truth.
+The practical result is simple: developers change Git, CI validates the change, and Argo CD reconciles the cluster. A chart or values change is handled by the existing child Application. A new or changed child Application manifest is handled by the parent first. Manual production edits are treated as drift, not as the source of truth. See the [complete Helm and Argo CD workflow](deployment/gitops/argocd/README.md) for local simulation, bootstrap, secrets, and operating details.
 
 ## Repository Structure
 
@@ -305,7 +324,7 @@ The complete llm-gateway architecture, including bounded-context boundaries, pro
 
 #### deployment/gitops/argocd/ - GitOps Control Plane
 
-This directory defines the Argo CD application structure for GitOps delivery. Parent Applications point at environment folders, and child Applications define service-specific Helm releases. Dev child Applications already exist for `hello` and `stream-ingestion`, while staging and production directories are ready for expansion.
+This directory defines the Argo CD application structure for GitOps delivery. Parent Applications point at environment folders, and child Applications define service-specific Helm releases. The llm-gateway now has child Applications for dev, staging, and production, while the parent Applications manage discovery through the app-of-apps pattern. Production provider secrets remain external to Git.
 
 #### dev/ and scripts/ - Local Developer Experience
 
@@ -416,7 +435,7 @@ SERVICE=my-service make generate-service
 
 | Layer                        | Technologies                        |
 | ---------------------------- | ----------------------------------- |
-| Language                     | Go 1.22+                            |
+| Language                     | Go 1.25+                            |
 | Container Orchestration      | Kubernetes (Kind for local dev)     |
 | Package Manager              | Helm 3+                             |
 | Service Mesh / Observability | Prometheus, OpenTelemetry (planned) |
@@ -436,8 +455,9 @@ SERVICE=my-service make generate-service
 - [x] Platform contracts and versioning policies
 - [ ] Real platform SDK implementations (pkg/technical, pkg/shared)
 - [ ] Kafka and Temporal integration
-- [ ] GitOps with Argo CD
+- [x] Argo CD app-of-apps structure with environment-specific llm-gateway Applications
 - [x] LLM gateway runtime scaffold, health endpoints, container build, and Helm deployment
+- [x] LLM gateway typed errors, cancellation handling, validation/refusal policy, and execution metadata
 - [ ] AI governance and LLM gateway completion pipeline
 
 ## License
