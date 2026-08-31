@@ -78,7 +78,7 @@ func TestValidationMatrix(t *testing.T) {
 				provider.NewFakeProvider(tt.response),
 			)
 
-			result, err := service.Complete(
+			result, _, err := service.Complete(
 				context.Background(),
 				validRequest(),
 			)
@@ -119,7 +119,7 @@ func TestValidationSuccess_LowRiskEmptyReasons(t *testing.T) {
 		provider.NewFakeProvider(response),
 	)
 
-	result, err := service.Complete(
+	result, _, err := service.Complete(
 		context.Background(),
 		validRequest(),
 	)

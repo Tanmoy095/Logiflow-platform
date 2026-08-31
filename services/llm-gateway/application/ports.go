@@ -31,4 +31,8 @@ type Provider interface {
 		ctx context.Context,
 		req domain.Request,
 	) (string, error)
+
+	// Name returns a short identifier for the provider (e.g., "openai", "fake").
+	// Used for observability metadata.
+	Name() string
 }

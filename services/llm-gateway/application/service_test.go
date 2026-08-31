@@ -74,7 +74,7 @@ func TestServiceComplete_ValidResponse(t *testing.T) {
 	}`
 
 	service := newServiceWithResponse(response)
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 	if err != nil {
 		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestServiceComplete_ValidResponse(t *testing.T) {
 // provider output is rejected as a validation failure, not a provider error.
 func TestServiceComplete_MalformedJSON(t *testing.T) {
 	service := newServiceWithResponse(`{risk:`)
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 
 	if err == nil {
 		t.Fatal("Complete() error = nil, want malformed JSON error")
@@ -124,7 +124,7 @@ func TestServiceComplete_ProviderError(t *testing.T) {
 	fake := &provider.FakeProvider{Err: expectedErr}
 	service := application.NewService(fake)
 
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 	if err == nil {
 		t.Fatal("Complete() error = nil, want provider error")
 	}
@@ -168,7 +168,7 @@ func TestServiceComplete_RequestValidation(t *testing.T) {
 			// The provider response is valid, but request validation must
 			// reject the call before any provider interaction.
 			service := newServiceWithResponse(`{"shipment_id":"ship-123","risk":"high_risk","confidence":0.95,"reasons":["delay"]}`)
-			result, err := service.Complete(context.Background(), tt.req)
+			result, _, err := service.Complete(context.Background(), tt.req)
 			if err == nil {
 				t.Fatal("Complete() error = nil, want request validation error")
 			}
@@ -202,7 +202,7 @@ func TestServiceComplete_SchemaValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := newServiceWithResponse(tt.response)
-			result, err := service.Complete(context.Background(), validRequest())
+			result, _, err := service.Complete(context.Background(), validRequest())
 			if err == nil {
 				t.Fatal("Complete() error = nil, want schema validation error")
 			}
@@ -237,7 +237,7 @@ func TestServiceComplete_DomainValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			service := newServiceWithResponse(tt.response)
-			result, err := service.Complete(context.Background(), validRequest())
+			result, _, err := service.Complete(context.Background(), validRequest())
 			if err == nil {
 				t.Fatal("Complete() error = nil, want domain validation error")
 			}
@@ -260,7 +260,7 @@ func TestServiceComplete_DomainValidation(t *testing.T) {
 // reasons for no_risk results.
 func TestServiceComplete_NoRiskMayHaveEmptyReasons(t *testing.T) {
 	service := newServiceWithResponse(`{"shipment_id":"ship-123","risk":"no_risk","confidence":0.99,"reasons":[]}`)
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 	if err != nil {
 		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestCompletionResultValidate_RejectsNonFiniteConfidence(t *testing.T) {
 // is valid.
 func TestServiceComplete_ShipmentIdentityMismatch(t *testing.T) {
 	service := newServiceWithResponse(`{"shipment_id":"ship-999","risk":"high_risk","confidence":0.95,"reasons":["delay"]}`)
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 	if err == nil {
 		t.Fatal("Complete() error = nil, want shipment identity mismatch")
 	}
@@ -325,7 +325,7 @@ func TestServiceComplete_ShipmentIdentityMismatch(t *testing.T) {
 	assertNoTrustedResult(t, result)
 }
 
-// --- ADDED tests: context & typed errors ---
+// --- Wednesday tests: context & typed errors ---
 
 // TestServiceComplete_ContextTimeout verifies that when the caller's context
 // deadline expires, the provider cancels the operation and the service
@@ -343,7 +343,7 @@ func TestServiceComplete_ContextTimeout(t *testing.T) {
 	}
 	service := application.NewService(fake)
 
-	result, err := service.Complete(ctx, validRequest())
+	result, _, err := service.Complete(ctx, validRequest())
 	if err == nil {
 		t.Fatal("Complete() error = nil, want timeout error")
 	}
@@ -390,7 +390,7 @@ func TestServiceComplete_ExplicitCancellation(t *testing.T) {
 	resultCh := make(chan result, 1)
 
 	go func() {
-		r, err := service.Complete(ctx, validRequest())
+		r, _, err := service.Complete(ctx, validRequest())
 		resultCh <- result{r, err}
 	}()
 
@@ -434,7 +434,7 @@ func TestServiceComplete_ContextAlreadyCanceled(t *testing.T) {
 	fake := provider.NewFakeProvider(validFixtureProviderResponse)
 	service := application.NewService(fake)
 
-	result, err := service.Complete(ctx, validRequest())
+	result, _, err := service.Complete(ctx, validRequest())
 	if err == nil {
 		t.Fatal("Complete() error = nil, want cancellation error")
 	}
@@ -463,7 +463,7 @@ func TestServiceComplete_ProviderErrorWrapped(t *testing.T) {
 	fake := &provider.FakeProvider{Err: baseErr}
 	service := application.NewService(fake)
 
-	result, err := service.Complete(context.Background(), validRequest())
+	result, _, err := service.Complete(context.Background(), validRequest())
 	if err == nil {
 		t.Fatal("Complete() error = nil, want provider error")
 	}

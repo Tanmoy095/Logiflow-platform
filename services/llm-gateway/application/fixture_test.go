@@ -136,7 +136,9 @@ func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
 	fake := provider.NewFakeProvider(validFixtureProviderResponse)
 	service := application.NewService(fake)
 
-	result, err := service.Complete(context.Background(), req)
+	// Complete now returns (result, metadata, error). We ignore metadata here
+	// because this test focuses on domain correctness, not observability.
+	result, _, err := service.Complete(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Complete() returned unexpected error: %v", err)
 	}
@@ -174,7 +176,8 @@ func TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID(t *testing.T)
 	fake := provider.NewFakeProvider(validFixtureProviderResponse)
 	service := application.NewService(fake)
 
-	result, err := service.Complete(context.Background(), req)
+	// Complete returns three values; ignore metadata.
+	result, _, err := service.Complete(context.Background(), req)
 	if err == nil {
 		t.Fatal("Complete() error = nil, want request validation error")
 	}
