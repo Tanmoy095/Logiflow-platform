@@ -4,31 +4,28 @@ package application
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
 )
 
 type Service struct {
-	provider Provider
+	provider        Provider
+	ValidationChain *ValidationChain
 }
 
 func NewService(provider Provider) *Service {
-	return &Service{provider: provider}
+	return &Service{provider: provider, ValidationChain: NewValidationChain()}
 }
 
 // Complete executes the LogiFlow AI‑completion use case.
 //
 // Steps:
-//  1. Validate request (domain invariants).
+//  1. Validate request (domain invariants) -> KindInvalidArgument.
 //  2. Call Provider with the caller's context.
-//  3. Classify provider errors (timeout, canceled, unavailable).
-//  4. Parse and validate provider output.
-//  5. Check shipment identity.
-//  6. Validate business rules.
-//  7. Return trusted CompletionResult or a typed DomainError.
+//  3. Classify provider operational errors (timeout, canceled, unavailable).
+//  4. Run the validation chain on the raw provider output.
+//  5. Return the trusted CompletionResult if all validations pass.
 //
 // The context is passed unchanged to the provider, so the provider
 // shares the same lifetime as this operation.
@@ -69,97 +66,16 @@ func (s *Service) Complete(
 		}
 	}
 
-	// Convert raw provider data into a candidate result.
-	result, err := parseProviderResponse(raw)
-	if err != nil {
-		// Parsing/schema errors are validation failures, not operational.
-		return domain.CompletionResult{}, domain.NewValidationFailedError(
-			err.Error(),
-		)
+	//Run the validation chain on the raw provider output.
+	input := &ValidationInput{
+		Request:           req,
+		RawProviderOutput: raw,
 	}
 
-	// Cross-entity consistency check.
-	//
-	// A valid JSON response for the wrong shipment is still invalid.
-	if result.ShipmentID != req.ShipmentID {
-		return domain.CompletionResult{}, domain.NewValidationFailedError(
-			fmt.Sprintf("shipment_id mismatch: requested %q, returned %q",
-				req.ShipmentID, result.ShipmentID),
-		)
-	}
-
-	if err := result.Validate(); err != nil {
+	if err := s.ValidationChain.Run(ctx, input); err != nil {
+		// Any validation failure is a semantic failure -> ValidationFailed.
 		return domain.CompletionResult{}, domain.NewValidationFailedError(err.Error())
 	}
-
-	// Step 7: success – trusted result.
-	return result, nil
-}
-
-// providerResponse is an intermediate representation of untrusted provider data.
-//
-// Pointers allow us to distinguish:
-//   - field missing / null -> nil
-//   - field present with zero value -> pointer to zero value
-//
-// This is important for schema validation.
-type providerResponse struct {
-	ShipmentID *string   `json:"shipment_id"`
-	Risk       *string   `json:"risk"`
-	Confidence *float64  `json:"confidence"`
-	Reasons    *[]string `json:"reasons"`
-}
-
-// parseProviderResponse performs syntax + schema validation.
-//
-// It does NOT perform business/domain validation.
-func parseProviderResponse(
-	raw string,
-) (domain.CompletionResult, error) {
-
-	var response providerResponse
-
-	// Stage 1: Syntax validation.
-	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"parse provider response: %w",
-			err,
-		)
-	}
-
-	// Stage 2: Schema validation.
-	if response.ShipmentID == nil {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"schema validation: shipment_id is required",
-		)
-	}
-
-	if response.Risk == nil {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"schema validation: risk is required",
-		)
-	}
-
-	if response.Confidence == nil {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"schema validation: confidence is required",
-		)
-	}
-
-	if response.Reasons == nil {
-		return domain.CompletionResult{}, fmt.Errorf(
-			"schema validation: reasons is required",
-		)
-	}
-
-	// Candidate construction.
-	//
-	// This is NOT trusted merely because construction succeeded.
-	// Domain validation happens immediately after this.
-	return domain.CompletionResult{
-		ShipmentID: *response.ShipmentID,
-		Risk:       domain.Risk(*response.Risk),
-		Confidence: *response.Confidence,
-		Reasons:    *response.Reasons,
-	}, nil
+	//  Success – candidate has passed all stages and is now trusted.
+	return *input.Candidate, nil
 }
