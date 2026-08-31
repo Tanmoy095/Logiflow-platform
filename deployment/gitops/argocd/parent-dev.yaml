@@ -8,16 +8,13 @@ spec:
   source:
     repoURL: https://github.com/Tanmoy095/LogiFlow-Platform
     targetRevision: main
-    path: deployment/gitops/argocd/apps-dev   # <-- dev folder
+    path: deployment/gitops/argocd/apps-dev # folder containing child apps
   destination:
     server: https://kubernetes.default.svc
-    namespace: argocd     # child Apps will be created here
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true
-
-
-
+    - CreateNamespace=true

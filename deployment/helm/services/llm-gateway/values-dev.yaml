@@ -1,31 +1,24 @@
 #deployment/helm/services/llm-gateway/values-dev.yaml
 # LLM Gateway Service – Default Values
 # ------------------------------------------------------------
-
-# Number of pod replicas. Override per environment via -f or --set.
 replicaCount: 1
-
-# Container image settings
 image:
-  repository: logiflow/llm-gateway # Docker image name
-  tag: local # Tag used for local development
-  pullPolicy: IfNotPresent # Use local image if available
+  repository: logiflow/llm-gateway
+  tag: local
+  pullPolicy: IfNotPresent
 
-# Service configuration
 service:
-  type: ClusterIP # Internal cluster-only access
-  port: 8080 # Port the service and container use
+  type: ClusterIP
+  port: 8080
 
-# Probe paths (can be overridden per service)
 probes:
   startup:
-    path: /healthz # temporary path; implement /startupz when available
+    path: /healthz
   readiness:
     path: /healthz
   liveness:
     path: /live
 
-# Resource requests and limits (defaults from library can be overridden here)
 resources:
   requests:
     cpu: 100m
@@ -33,3 +26,8 @@ resources:
   limits:
     cpu: 200m
     memory: 256Mi
+
+config:
+  logLevel: "info"
+  routingPolicy: "cost-optimized"
+  modelTimeout: "30s"

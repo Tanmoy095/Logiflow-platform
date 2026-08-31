@@ -28,7 +28,16 @@ spec:
             {{- include "logiflow.resources" . | nindent 12 }}
           {{ include "logiflow.probes" . | nindent 10 }}
           env:
-            - name: llm_gateway
+            - name: SERVICE_NAME
               value: {{ .Chart.Name | quote }}
             - name: PORT
               value: {{ .Values.service.port | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | default "info" | quote }}
+            - name: MODEL_ROUTING_POLICY
+              value: {{ .Values.config.routingPolicy | default "cost-optimized" | quote }}
+            - name: PROVIDER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "logiflow.name" . }}-secret
+                  key: providerApiKey

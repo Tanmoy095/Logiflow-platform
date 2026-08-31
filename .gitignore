@@ -24,14 +24,19 @@ go.work.sum
 .vscode/
 *.swp
 
+
 # OS files
 .DS_Store
 Thumbs.db
 # Logs
 *.log
 deployment/helm/services/stream-ingestion/values-prod-secrets.yaml
+deployment/helm/services/llm-gateway/values-prod-secrets.yaml
 # Local project notes
 note.md
 
 # Local daily notes
 docs/daily/
+
+#prod_sec
+values-prod-secrets.yaml

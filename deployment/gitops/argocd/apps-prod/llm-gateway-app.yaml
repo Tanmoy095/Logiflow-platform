@@ -1,22 +1,22 @@
-##deployment/gitops/argocd/apps-dev/stream-ingestion-app.yaml
-
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: stream-ingestion
+  name: llm-gateway
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/Tanmoy095/LogiFlow-Platform
     targetRevision: main
-    path: deployment/helm/services/stream-ingestion
+    path: deployment/helm/services/llm-gateway
     helm:
       valueFiles:
       - values-dev.yaml
+      - values-prod.yaml
+      - values-prod-secrets.yaml # not committed in Git – see below
   destination:
     server: https://kubernetes.default.svc
-    namespace: logiflow-dev
+    namespace: logiflow-prod
   syncPolicy:
     automated:
       prune: true
