@@ -345,3 +345,11 @@ The manual validation is complete when:
 - Reapplying the desired manifest restores the declared replica count after manual drift.
 
 At that point, the chart, values files, and Argo CD Application manifests are ready for review in Git. Argo CD automates the reconciliation steps; it does not replace the need for CI validation and human review.
+
+## LLM Gateway Smoke Test
+
+Run from repo root:
+
+    SERVICE=llm-gateway NAMESPACE=logiflow-dev ./scripts/dev/smoke-k8s.sh
+
+If it fails, follow the failure scenarios above.
