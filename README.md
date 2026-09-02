@@ -20,8 +20,11 @@ The latest implementation work moves the LLM Gateway from a runtime scaffold tow
 - **Explicit refusal behavior:** malformed or semantically invalid model output is rejected rather than silently repaired or passed to automation.
 - **Execution metadata:** each completion records a correlation ID, provider, prompt version, status, error kind, provider latency, validation latency, and total gateway latency.
 - **Environment-aware delivery:** the gateway now has dev, staging, and production Helm overlays, secure provider-key injection, standard probes and resources, and Argo CD child Applications managed through the app-of-apps pattern.
+- **Repeatable deployment verification:** `scripts/dev/smoke-k8s.sh` provides an eight-step local validation gate covering preflight checks, Docker build, Kind image loading, Helm dependency updates, chart validation, deployment, rollout readiness, and an in-cluster health request.
+- **Operational runbook evidence:** the gateway has a reproducible manual runbook covering image loading, Helm validation, Kubernetes deployment, health verification, GitOps simulation, troubleshooting, and failure recovery.
+- **Layered traffic strategy:** ADR-012 standardizes ClusterIP for internal east-west traffic and defers L7 Ingress or Gateway API adoption until external routing, TLS, or progressive delivery is required.
 
-These capabilities are covered by focused Go tests and operational guidance in [docs/runbooks/llm-gateway.md](docs/runbooks/llm-gateway.md). Provider adapters, shared budget enforcement, fallback routing, and asynchronous usage accounting remain planned integrations rather than claims of the current runtime.
+These capabilities are covered by focused Go tests, the [LLM Gateway runbook](docs/runbooks/llm-gateway.md), the [manual deployment runbook](docs/runbooks/manual_runbook.md), and the [smoke-test runbook](docs/runbooks/smoketest.md). Provider adapters, shared budget enforcement, fallback routing, and asynchronous usage accounting remain planned integrations rather than claims of the current runtime.
 
 ## High-Level Architecture
 
@@ -222,6 +225,29 @@ flowchart TB
 
 The practical result is simple: developers change Git, CI validates the change, and Argo CD reconciles the cluster. A chart or values change is handled by the existing child Application. A new or changed child Application manifest is handled by the parent first. Manual production edits are treated as drift, not as the source of truth. See the [complete Helm and Argo CD workflow](deployment/gitops/argocd/README.md) for local simulation, bootstrap, secrets, and operating details.
 
+## Deployment Validation and Traffic Strategy
+
+LogiFlow separates desired-state reconciliation from runtime verification:
+
+| Concern                     | Mechanism                       | What it proves                                                                      |
+| --------------------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
+| Code correctness            | Go tests and `go vet` in CI     | Application behavior and static code quality                                        |
+| Manifest correctness        | `helm lint` and `helm template` | Chart syntax, dependencies, and rendered Kubernetes resources                       |
+| Runtime health              | `scripts/dev/smoke-k8s.sh`      | The image builds, deploys, reaches Ready, and answers `/healthz` inside the cluster |
+| Shared-environment delivery | Argo CD                         | The cluster converges to the Git-defined state and repairs drift                    |
+
+The reusable smoke test is intentionally non-interactive and exits with a failure code when any critical step fails. It is suitable for local Kind validation and CI environments. It does not replace unit tests, and it does not replace Argo CD; it provides the runtime check that manifest reconciliation alone cannot provide. See the [smoke-test runbook](docs/runbooks/smoketest.md) and [manual gateway runbook](docs/runbooks/manual_runbook.md).
+
+### Load-balancing policy
+
+LogiFlow uses a layered traffic model documented in [ADR-012](docs/adr/012%20%E2%80%94%20Load%20Balancer%20Strategy%20for%20LogiFlow.md):
+
+- **ClusterIP for internal traffic:** services communicate through stable Kubernetes DNS and only ready pods receive traffic.
+- **L7 Ingress or Gateway API for future external traffic:** TLS termination, host/path routing, authentication, and weighted releases are introduced when a public API requires them.
+- **No default external exposure:** current services remain internal, avoiding unnecessary cloud load balancers and accidental internet exposure.
+
+Readiness probes are the shared routing signal at both the Kubernetes Service and future L7 edge. A pod that is not ready is removed from traffic, while the smoke test confirms that a ready service responds to a real request.
+
 ## Repository Structure
 
 ```text
@@ -334,7 +360,7 @@ This directory defines the Argo CD application structure for GitOps delivery. Pa
 
 #### docs/ - Engineering Evidence
 
-Contains Architecture Decision Records for every major design choice, production debugging runbooks, and portfolio evidence. This is the why behind the code.
+Contains Architecture Decision Records for every major design choice, production debugging runbooks, deployment validation guides, and portfolio evidence. This is the why behind the code. The LLM Gateway evidence includes the [manual deployment runbook](docs/runbooks/manual_runbook.md), [smoke-test runbook](docs/runbooks/smoketest.md), and [load-balancer strategy](docs/adr/012%20%E2%80%94%20Load%20Balancer%20Strategy%20for%20LogiFlow.md).
 
 ## The Golden Path: Creating a New Service
 
@@ -456,6 +482,9 @@ SERVICE=my-service make generate-service
 - [ ] Real platform SDK implementations (pkg/technical, pkg/shared)
 - [ ] Kafka and Temporal integration
 - [x] Argo CD app-of-apps structure with environment-specific llm-gateway Applications
+- [x] Reusable Kubernetes smoke-test script with in-cluster health verification
+- [x] LLM Gateway manual deployment and failure-recovery runbook
+- [x] Layered load-balancer strategy for internal and future external traffic
 - [x] LLM gateway runtime scaffold, health endpoints, container build, and Helm deployment
 - [x] LLM gateway typed errors, cancellation handling, validation/refusal policy, and execution metadata
 - [ ] AI governance and LLM gateway completion pipeline
