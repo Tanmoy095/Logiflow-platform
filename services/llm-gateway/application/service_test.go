@@ -147,7 +147,7 @@ func TestServiceComplete_ProviderError(t *testing.T) {
 }
 
 // TestServiceComplete_RequestValidation ensures that invalid requests
-// (missing shipment ID or prompt) are rejected before the provider is called.
+// (missing shipment ID, prompt, or prompt version) are rejected before the provider is called.
 func TestServiceComplete_RequestValidation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -160,6 +160,10 @@ func TestServiceComplete_RequestValidation(t *testing.T) {
 		{
 			name: "missing prompt",
 			req:  domain.Request{ShipmentID: "ship-123", PromptVersion: "v1"},
+		},
+		{
+			name: "missing prompt version",
+			req:  domain.Request{ShipmentID: "ship-123", Prompt: "Analyze shipment"},
 		},
 	}
 

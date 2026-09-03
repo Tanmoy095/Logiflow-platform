@@ -62,6 +62,10 @@ func (r Request) Validate() error {
 		return fmt.Errorf("prompt must not be empty")
 	}
 
+	if r.PromptVersion == "" {
+		return fmt.Errorf("prompt_version must not be empty")
+	}
+
 	return nil
 }
 
