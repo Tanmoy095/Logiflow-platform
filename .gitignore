@@ -42,3 +42,5 @@ docs/daily/
 values-prod-secrets.yaml
 
 docs/sprint-01.md
+
+llm-gateway_tracking.md

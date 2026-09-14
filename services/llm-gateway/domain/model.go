@@ -1,116 +1,97 @@
-// 	services/llm-gateway/domain/model.go
-
 package domain
 
 import (
 	"fmt"
-	"math"
+	"strings"
 )
 
-/**
-What business concepts must exist even if OpenAI disappears tomorrow?
-
-Answer:the Business domains of llm-gateway are:
-
-Request
-CompletionResult
-Risk
-confidence
-shipment identity
-reasons
-
-domain owns:
-
-shipment identity
-risk validity
-confidence validity
-reasons requirement
-
-*/
-
-// Risk represents the business classification assigned to a shipment.
-type Risk string
+// TaskType identifies a governed AI capability exposed by the LLM Gateway.
+//
+// This is deliberately a closed vocabulary inside the gateway. A caller cannot
+// invent a new task at runtime and expect the gateway to execute arbitrary work.
+// Every supported TaskType must have a registered definition describing its
+// input contract, output schema and validation behavior.
+type TaskType string
 
 const (
-	RiskNoRisk     Risk = "no_risk"
-	RiskMediumRisk Risk = "medium_risk"
-	RiskHighRisk   Risk = "high_risk"
+	// TaskShipmentDelayRisk is the first real business capability implemented in
+	// Sprint 01. More capabilities can be added later without changing the
+	// generic CompleteCommand contract.
+	TaskShipmentDelayRisk TaskType = "shipment_delay_risk"
 )
 
-// Request represents the business request to perform a controlled
-// AI completion for a specific shipment.
-type Request struct {
-	ShipmentID    string
-	Prompt        string
-	PromptVersion string // Version of the prompt template (behavior contract).
+// EntityType identifies the business subject on which a capability operates.
+// The gateway stores references rather than domain entities so it does not
+// become the owner of shipment or customer state.
+type EntityType string
+
+const (
+	EntityShipment EntityType = "shipment"
+
+	//future: EntityCustomer EntityType = "customer"
+	//future: EntityCarrier EntityType = "carrier"
+)
+
+// EntityReference is an explicit reference to a business subject.
+//
+// Important: ID here is intentionally generic because the reference could be
+// a shipment, customer, carrier, or another future subject. Durable evidence
+// is different and therefore gets its own strongly named EvidenceReference.
+type EntityReference struct {
+	Type EntityType `json:"type"`
+	ID   string     `json:"id"`
 }
 
-// CompletionResult is the trusted representation of an AI completion.
-type CompletionResult struct {
-	ShipmentID string   `json:"shipment_id"`
-	Risk       Risk     `json:"risk"`
-	Confidence float64  `json:"confidence"`
-	Reasons    []string `json:"reasons"`
+// EvidenceReference points at durable business evidence owned by the evidence
+// subsystem. The gateway must never replace EvidenceID with a generic ID:
+// evidence_id, request_id and shipment_id have different lifecycles and
+// different security/audit meanings.
+type EvidenceReference struct {
+	EvidenceID string `json:"evidence_id"`
 }
 
-func (r Request) Validate() error {
-	if r.ShipmentID == "" {
-		return fmt.Errorf("shipment_id must not be empty")
-	}
+// ExecutionStatus is the stable outcome vocabulary used by the application
+// and usage/audit events. Transport adapters may map these statuses to HTTP or
+// gRPC-specific codes, but domain code should not know those protocols.
+type ExecutionStatus string
 
-	if r.Prompt == "" {
-		return fmt.Errorf("prompt must not be empty")
-	}
+const (
+	ExecutionSucceeded        ExecutionStatus = "succeeded"
+	ExecutionFailed           ExecutionStatus = "failed"
+	ExecutionProviderFailed   ExecutionStatus = "provider_failed"
+	ExecutionValidationFailed ExecutionStatus = "validation_failed"
+	ExecutionDeadlineExceeded ExecutionStatus = "deadline_exceeded"
+	ExecutionRequestCancelled ExecutionStatus = "request_cancelled"
+)
 
-	if r.PromptVersion == "" {
-		return fmt.Errorf("prompt_version must not be empty")
-	}
+// ValidationStatus tells us whether provider output crossed the trust boundary.
+// A provider call can succeed operationally while validation still fails.
+type ValidationStatus string
 
+const (
+	ValidationNotRun ValidationStatus = "not_run"
+	ValidationPassed ValidationStatus = "passed"
+	ValidationFailed ValidationStatus = "failed"
+)
+
+// ValidateReference performs only structural validation. It does not check a
+// database because the gateway does not own those business entities.
+func (r EntityReference) Validate() error {
+	if strings.TrimSpace(string(r.Type)) == "" {
+		return fmt.Errorf("entity type must not be empty")
+	}
+	if strings.TrimSpace(r.ID) == "" {
+		return fmt.Errorf("entity id must not be empty")
+	}
 	return nil
 }
 
-func (c CompletionResult) Validate() error {
-	if c.ShipmentID == "" {
-		return fmt.Errorf(
-			"shipment_id must not be empty",
-		)
+// Validate performs the structural validation for a durable evidence reference.
+// Existence and tenant ownership remain responsibilities of the evidence/RAG
+// boundary that supplied the reference.
+func (r EvidenceReference) Validate() error {
+	if strings.TrimSpace(r.EvidenceID) == "" {
+		return fmt.Errorf("evidence_id must not be empty")
 	}
-
-	switch c.Risk {
-	case RiskNoRisk, RiskMediumRisk, RiskHighRisk:
-		// Supported business value.
-	default:
-		return fmt.Errorf(
-			"invalid risk value: %q",
-			c.Risk,
-		)
-	}
-
-	// Protect the domain invariant independently of the transport/parser.
-	//
-	// JSON itself does not normally encode NaN or +/-Inf, but this domain
-	// object may be constructed from Go code or another future adapter.
-	if math.IsNaN(c.Confidence) || math.IsInf(c.Confidence, 0) {
-		return fmt.Errorf(
-			"confidence must be a finite number",
-		)
-	}
-
-	if c.Confidence < 0 || c.Confidence > 1 {
-		return fmt.Errorf(
-			"confidence must be between 0 and 1",
-		)
-	}
-
-	// Cross-field business invariant:
-	//
-	// High-risk classifications require evidence explaining why the
-	// shipment was classified as high risk.
-	if c.Risk == RiskHighRisk && len(c.Reasons) == 0 {
-		return fmt.Errorf(
-			"high_risk requires at least one reason",
-		)
-	}
-
 	return nil
 }
