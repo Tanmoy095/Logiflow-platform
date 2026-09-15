@@ -13,7 +13,7 @@ type Policy struct{}
 // Validate verifies the final candidate before the application is allowed to
 // expose it as a trusted business result. We reject invalid model output rather
 // than silently repairing it because silent repair hides model degradation.
-func (Policy) Validate(result Result) error {
+func (Policy) Validate(result ShipmentRiskResult) error {
 	if strings.TrimSpace(result.ShipmentID) == "" {
 		return fmt.Errorf("shipment_id must not be empty")
 	}

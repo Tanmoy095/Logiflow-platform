@@ -19,7 +19,7 @@ const (
 
 // Result is trusted only after Policy.Validate succeeds. It should never be
 // constructed and returned directly from a provider adapter.
-type Result struct {
+type ShipmentRiskResult struct {
 	ShipmentID string   `json:"shipment_id"`
 	Risk       Risk     `json:"risk"`
 	Confidence float64  `json:"confidence"`
@@ -29,4 +29,4 @@ type Result struct {
 // Whenever anyone asks a shipmentrisk.Result object: 'Hey, what kind of AI task created you?',
 // it will always answer: 'I was created by shipment_delay_risk'."
 
-func (r Result) TaskType() domain.TaskType { return domain.TaskShipmentDelayRisk }
+func (r ShipmentRiskResult) TaskType() domain.TaskType { return domain.TaskShipmentDelayRisk }

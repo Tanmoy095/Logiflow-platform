@@ -3,6 +3,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
 )
@@ -29,10 +30,23 @@ CompletionResult is created only after those checks pass, making it a trust-bear
 type Provider interface {
 	Complete(
 		ctx context.Context,
-		req domain.Request,
-	) (string, error)
+		req ProviderRequest,
+	) (ProviderResponse, error)
 
 	// Name returns a short identifier for the provider (e.g., "openai", "fake").
 	// Used for observability metadata.
 	Name() string
+}
+
+//Flexible Kafka/AWS Kinesis/PostgreSQL Outbox Table implementation for publishing usage
+// events. The application defines what it needs; infrastructure decides how to publish.
+
+type UsagePublisher interface {
+	PublishUsageEvent(ctx context.Context, event domain.AIUsageEvent) error
+}
+
+// Clock lets deterministic tests control time without replacing time.Now
+// throughout the business code. The default implementation is systemClock.
+type Clock interface {
+	Now() time.Time
 }
