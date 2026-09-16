@@ -1,47 +1,13 @@
-// services/llm-gateway/application/service.go
-
 package application
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
 )
-
-// ExecutionMetadata captures complete operational telemetry for a request.
-// It is intentionally separated from business data (TaskResult) so FinOps,
-// SecOps, and DevOps can analyze execution performance without corrupting domain models.
-type ExecutionMetadata struct {
-	RequestID        string                  `json:"request_id"`
-	TenantID         string                  `json:"tenant_id"`
-	ContractVersion  string                  `json:"contract_version"`
-	TaskType         domain.TaskType         `json:"task_type"`
-	Provider         string                  `json:"provider"`
-	Model            string                  `json:"model,omitempty"`
-	Status           domain.ExecutionStatus  `json:"status"`
-	ValidationStatus domain.ValidationStatus `json:"validation_status"`
-
-	// ErrorKind indicates the type of error that occurred during execution. It is empty on success. This field is crucial for understanding the nature of failures and for implementing appropriate retry or fallback strategies.
-	ErrorKind domain.Kind `json:"error_kind,omitempty"`
-
-	// Latency measurements are crucial for understanding the performance of the gateway and the provider. They help identify bottlenecks and optimize the system. The latencies are measured in milliseconds to provide a fine-grained view of the performance.
-	// e.g., if the provider latency is high, it may indicate that the provider is under heavy load or that the request is complex. If the validation latency is high, it may indicate that the validation logic needs optimization.
-	ProviderLatencyMs     float64 `json:"provider_latency_ms"`
-	ValidationLatencyMs   float64 `json:"validation_latency_ms"`
-	TotalGatewayLatencyMs float64 `json:"total_gateway_latency_ms"`
-
-	// Token counts and estimated costs are important for billing and resource management. They help track how many tokens were consumed by the request and estimate the cost incurred. This information is useful for both the service provider and the customer to manage usage and costs effectively.
-	InputTokens      int64   `json:"input_tokens,omitempty"`
-	OutputTokens     int64   `json:"output_tokens,omitempty"`
-	TotalTokens      int64   `json:"total_tokens,omitempty"`
-	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
-	Attempts         int     `json:"attempts"`
-}
 
 // Service orchestrates the LLM gateway pipeline. It acts as a pure workflow controller
 // that coordinates domain policies, registry resolution, external providers, and telemetry.
@@ -95,7 +61,6 @@ func (s *Service) Complete(
 
 	// Step 0: Initialize baseline metadata assuming failure until proven successful ,
 	// why : because we want to ensure that any early exit due to validation or provider errors is captured in the metadata.
-
 	metadata := ExecutionMetadata{
 		RequestID:        cmd.RequestID,
 		TenantID:         cmd.TenantID,
@@ -132,7 +97,6 @@ func (s *Service) Complete(
 	}
 
 	// Step 2: Validate global domain execution policy (contract version, tenant checks)
-
 	if err := s.executionPolicy.ValidateCommandContext(
 		cmd.ContractVersion,
 		cmd.TenantID,
@@ -146,9 +110,7 @@ func (s *Service) Complete(
 	}
 
 	// Step 3: Resolve task definition handler from registry
-
 	task, err := s.registry.Resolve(cmd.TaskType)
-
 	if err != nil {
 		metadata.ErrorKind = domain.KindUnsupportedTask
 		publishAttempt(domain.ExecutionFailed)
@@ -156,7 +118,6 @@ func (s *Service) Complete(
 	}
 
 	// Step 4: Validate command against task-specific requirements (e.g., subject count & type)
-
 	if err := task.ValidateCommand(cmd); err != nil {
 		metadata.ErrorKind = domain.KindContractMismatch
 		publishAttempt(domain.ExecutionFailed)
@@ -181,7 +142,6 @@ func (s *Service) Complete(
 	}
 
 	// Step 6: Invoke external LLM provider & measure provider network latency
-
 	providerStartedAt := s.clock.Now()
 
 	providerResponse, err := s.provider.Complete(
@@ -232,14 +192,12 @@ func (s *Service) Complete(
 	}
 
 	// Step 9: Finalize metadata for successful execution and publish telemetry
-
 	metadata.ValidationStatus = domain.ValidationPassed
 	metadata.Status = domain.ExecutionSucceeded
 	metadata.TotalGatewayLatencyMs = elapsedMilliseconds(startedAt, s.clock.Now())
 
 	s.publishUsageEvent(ctx, cmd, metadata)
 	return result, metadata, nil
-
 }
 
 // effectiveContext reconciles the parent request context with an optional explicit command deadline.
@@ -265,7 +223,6 @@ func (s *Service) effectiveContext(parent context.Context, requestedDeadline tim
 }
 
 // publishUsageEvent constructs and emits an audit/billing event to the Kafka publisher port.
-
 // publishUsageEvent emits telemetry non-blockingly using a detached background context.
 func (s *Service) publishUsageEvent(ctx context.Context, cmd CompleteCommand, metadata ExecutionMetadata) {
 	if s.usagePublisher == nil {
@@ -313,22 +270,8 @@ func (s *Service) publishUsageEvent(ctx context.Context, cmd CompleteCommand, me
 	go func() {
 		_ = s.usagePublisher.PublishUsageEvent(pubCtx, event)
 	}()
-
-}
-
-// newEventID generates a cryptographically secure 128-bit random hex string.
-func newEventID() (string, error) {
-	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes[:]), nil
 }
 
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
-
-func elapsedMilliseconds(start, end time.Time) float64 {
-	return float64(end.Sub(start).Microseconds()) / 1000.0
-}
