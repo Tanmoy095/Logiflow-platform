@@ -10,18 +10,16 @@ import (
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain/shipmentrisk"
 )
 
-// Registry is a container for all the application's dependencies.
-// TaskResult is the common read-only shape returned by the task registry.
+// TaskResult is the polymorphic interface implemented by all domain result models.
+// It allows service.go to handle domain results without knowing their underlying concrete types.
+
 type TaskResult interface {
 	TaskType() domain.TaskType
 }
 
-//TaskDefinition is the application-side capability adapter.
-//
-// It connects the generic CompleteCommand to a specific domain capability while
-// avoiding a giant switch in Service.Complete. Adding a future capability means
-// registering another TaskDefinition rather than editing the core use case.
-
+// TaskDefinition is the capability adapter interface.
+// Each AI task (Shipment Risk, Port Risk, Customs Summary) implements this interface
+// to plug directly into the gateway's execution pipeline
 type TaskDefinition interface {
 	TaskType() domain.TaskType
 	TaskSchemaVersion() string
@@ -31,10 +29,13 @@ type TaskDefinition interface {
 	DecodeAndValidate(context.Context, CompleteCommand, string) (TaskResult, error)
 }
 
+// TaskRegistry manages the map of supported AI capabilities initialized during application startup.
 type TaskRegistry struct {
 	definitions map[domain.TaskType]TaskDefinition
 }
 
+// NewTaskRegistry builds the O(1) lookup table of capabilities at server boot.
+// It enforces uniqueness to prevent double-registration errors at startup.
 func NewTaskRegistry(definitions ...TaskDefinition) (*TaskRegistry, error) {
 
 	definitionsByType := make(map[domain.TaskType]TaskDefinition, len(definitions))
@@ -56,7 +57,7 @@ func NewTaskRegistry(definitions ...TaskDefinition) (*TaskRegistry, error) {
 	return &TaskRegistry{definitions: definitionsByType}, nil
 }
 
-// Resolve returns the TaskDefinition for the given taskType or an error if not found.
+// Resolve looks up the requested task handler at runtime during an active API call.
 func (r *TaskRegistry) Resolve(taskType domain.TaskType) (TaskDefinition, error) {
 	definition, ok := r.definitions[taskType]
 	if !ok {
@@ -89,6 +90,7 @@ func (ShipmentRiskTaskDefinition) OutputSchemaVersion() string {
 	return shipmentrisk.ResultSchemaVersion
 }
 
+// ValidateCommand ensures incoming request parameters meet shipment-risk business rules.
 func (t ShipmentRiskTaskDefinition) ValidateCommand(cmd CompleteCommand) error {
 	if cmd.TaskSchemaVersion != t.TaskSchemaVersion() {
 		return fmt.Errorf("task_schema_version %q does not match supported version %q", cmd.TaskSchemaVersion, t.TaskSchemaVersion())
@@ -105,6 +107,7 @@ func (t ShipmentRiskTaskDefinition) ValidateCommand(cmd CompleteCommand) error {
 	return nil
 }
 
+// BuildProviderRequest isolates prompt and version details for vendor transmission.
 func (ShipmentRiskTaskDefinition) BuildProviderRequest(cmd CompleteCommand) ProviderRequest {
 	return ProviderRequest{
 		TaskType:            cmd.TaskType,
@@ -115,6 +118,8 @@ func (ShipmentRiskTaskDefinition) BuildProviderRequest(cmd CompleteCommand) Prov
 	}
 }
 
+// shipmentRiskProviderResponse is an untrusted DTO used exclusively for parsing raw JSON.
+// Pointers distinguish between omitted JSON fields (nil) and present zero values ("" or 0.0).
 type shipmentRiskProviderResponse struct {
 	ShipmentID *string   `json:"shipment_id"`
 	Risk       *string   `json:"risk"`
@@ -122,10 +127,14 @@ type shipmentRiskProviderResponse struct {
 	Reasons    *[]string `json:"reasons"`
 }
 
+// DecodeAndValidate executes the complete 3-stage validation pipeline inside the capability definition.
 func (t ShipmentRiskTaskDefinition) DecodeAndValidate(_ context.Context, cmd CompleteCommand, raw string) (TaskResult, error) {
-	// DisallowUnknownFields prevents a provider from silently returning a shape
-	// that is broader or different from the contract the caller requested.
+	// -------------------------------------------------------------------------
+	// STAGE 1: Syntax Validation & Strict JSON Parsing
+	// -------------------------------------------------------------------------
 	decoder := json.NewDecoder(strings.NewReader(raw))
+
+	// Rejects unknown JSON keys returned by hallucinating LLMs
 	decoder.DisallowUnknownFields()
 
 	var candidate shipmentRiskProviderResponse
@@ -133,13 +142,15 @@ func (t ShipmentRiskTaskDefinition) DecodeAndValidate(_ context.Context, cmd Com
 		return nil, fmt.Errorf("syntax validation failed: %w", err)
 	}
 
-	// Reject concatenated JSON documents such as `{...}{...}` rather than
-	// accepting the first value and ignoring trailing provider output.
+	// Rejects concatenated JSON streams (e.g., `{...}{...}`)
 	var extra any
 	if err := decoder.Decode(&extra); err == nil {
 		return nil, fmt.Errorf("syntax validation failed: multiple JSON values returned")
 	}
 
+	// -------------------------------------------------------------------------
+	// STAGE 2: Schema Validation (Nullability & Mandatory Fields)
+	// -------------------------------------------------------------------------
 	if candidate.ShipmentID == nil {
 		return nil, fmt.Errorf("schema validation failed: shipment_id is required")
 	}
@@ -153,6 +164,7 @@ func (t ShipmentRiskTaskDefinition) DecodeAndValidate(_ context.Context, cmd Com
 		return nil, fmt.Errorf("schema validation failed: reasons is required")
 	}
 
+	// Map untrusted DTO to candidate domain model
 	result := shipmentrisk.ShipmentRiskResult{
 		ShipmentID: *candidate.ShipmentID,
 		Risk:       shipmentrisk.Risk(*candidate.Risk),
@@ -160,17 +172,21 @@ func (t ShipmentRiskTaskDefinition) DecodeAndValidate(_ context.Context, cmd Com
 		Reasons:    *candidate.Reasons,
 	}
 
-	// Domain validation must also ensure the provider answered about the same
-	// business subject the request asked us to analyze. This is stronger than
-	// merely checking that shipment_id is non-empty.
+	// -------------------------------------------------------------------------
+	// STAGE 3: Domain Validation (Subject Correlation & Policy Invariants)
+	// -------------------------------------------------------------------------
+
+	// Subject Correlation Check: Verify LLM evaluated the requested shipment ID
 	requestedShipmentID := cmd.Subjects[0].ID
 	if result.ShipmentID != requestedShipmentID {
 		return nil, fmt.Errorf("domain validation failed: provider shipment_id %q does not match requested shipment %q", result.ShipmentID, requestedShipmentID)
 	}
 
+	// Delegate business invariant rules to domain/shipmentrisk
 	if err := t.policy.Validate(result); err != nil {
 		return nil, fmt.Errorf("domain validation failed: %w", err)
 	}
 
+	// Output is now fully validated and trusted
 	return result, nil
 }
