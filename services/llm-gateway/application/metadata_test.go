@@ -1,5 +1,3 @@
-// services/llm-gateway/application/metadata_test.go
-
 package application_test
 
 import (
@@ -18,14 +16,14 @@ import (
 // estimated costs, fine-grained latencies, and success status flags.
 func TestServiceComplete_MetadataSuccess(t *testing.T) {
 	response := `{
-        "shipment_id": "ship-123",
-        "risk": "high_risk",
-        "confidence": 0.94,
-        "reasons": ["Customs clearance delay detected"]
-    }`
+		"shipment_id": "SH-123",
+		"risk": "high_risk",
+		"confidence": 0.94,
+		"reasons": ["Customs clearance delay detected"]
+	}`
 
-	svc := setupTestService(provider.NewFakeProvider(response))
-	cmd := validCompleteCommand()
+	svc := setupMetadataTestService(t, provider.NewFakeProvider("fake", response))
+	cmd := validMetadataCompleteCommand()
 
 	result, meta, err := svc.Complete(context.Background(), cmd)
 	if err != nil {
@@ -90,11 +88,11 @@ func TestServiceComplete_MetadataSuccess(t *testing.T) {
 // record the exact classification, set execution status, and capture latency.
 func TestServiceComplete_MetadataProviderError(t *testing.T) {
 	baseErr := errors.New("upstream connection refused")
-	fake := provider.NewFakeProvider("")
-	fake.Err = baseErr // Adjust if FakeProvider handles errors differently
+	fake := provider.NewFakeProvider("fake", "")
+	fake.Err = baseErr
 
-	svc := setupTestService(fake)
-	cmd := validCompleteCommand()
+	svc := setupMetadataTestService(t, fake)
+	cmd := validMetadataCompleteCommand()
 
 	_, meta, err := svc.Complete(context.Background(), cmd)
 	if err == nil {
@@ -120,9 +118,10 @@ func TestServiceComplete_MetadataProviderError(t *testing.T) {
 
 // TestServiceComplete_MetadataValidationError verifies validation parsing errors.
 func TestServiceComplete_MetadataValidationError(t *testing.T) {
-	invalidResponse := `{"shipment_id":"ship-123","risk":"high_risk","confidence":99.0}`
-	svc := setupTestService(provider.NewFakeProvider(invalidResponse))
-	cmd := validCompleteCommand()
+	// Confidence > 1.0 triggers domain policy validation error
+	invalidResponse := `{"shipment_id":"SH-123","risk":"high_risk","confidence":99.0,"reasons":["invalid confidence"]}`
+	svc := setupMetadataTestService(t, provider.NewFakeProvider("fake", invalidResponse))
+	cmd := validMetadataCompleteCommand()
 
 	_, meta, err := svc.Complete(context.Background(), cmd)
 	if err == nil {
@@ -145,11 +144,11 @@ func TestServiceComplete_MetadataValidationError(t *testing.T) {
 
 // TestServiceComplete_MetadataTimeout verifies timeout and cancellation handling.
 func TestServiceComplete_MetadataTimeout(t *testing.T) {
-	svc := setupTestService(provider.NewFakeProvider("{}"))
-	cmd := validCompleteCommand()
+	svc := setupMetadataTestService(t, provider.NewFakeProvider("fake", "{}"))
+	cmd := validMetadataCompleteCommand()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	cancel() // Immediately cancel context to trigger pre-flight check
 
 	_, meta, err := svc.Complete(ctx, cmd)
 	if err == nil {
@@ -169,37 +168,45 @@ func TestServiceComplete_MetadataTimeout(t *testing.T) {
 
 // --- Test Helpers ---
 
-func setupTestService(p application.Provider) *application.Service {
-	// Initialize the shipment risk task definition and register it
+func setupMetadataTestService(t *testing.T, p application.Provider) *application.Service {
+	t.Helper()
 	taskDef := application.NewShipmentRiskTaskDefinition()
-
-	// NewTaskRegistry returns (*TaskRegistry, error), so we handle or ignore the error in tests
 	registry, err := application.NewTaskRegistry(taskDef)
 	if err != nil {
-		panic(err) // Safe for tests if setup fails
+		t.Fatalf("failed to create task registry: %v", err)
 	}
 
-	policy := domain.ExecutionPolicy{} // Use your actual initialization method if needed
+	policy := domain.ExecutionPolicy{
+		CurrentContractVersion: application.CurrentContractVersion,
+		MaxEvidenceReferences:  32,
+	}
+
 	svc, err := application.NewService(p, registry, policy, nil, nil)
 	if err != nil {
-		panic(err)
+		t.Fatalf("failed to create application service: %v", err)
 	}
 	return svc
 }
 
-func validCompleteCommand() application.CompleteCommand {
+func validMetadataCompleteCommand() application.CompleteCommand {
 	return application.CompleteCommand{
-		RequestID:           "req-abc-123",
+		ContractVersion:     application.CurrentContractVersion,
 		TenantID:            "tenant-xyz",
-		ContractVersion:     "v1",
-		TaskType:            domain.TaskShipmentDelayRisk, // Fixed: matches your registry.go task type
-		TaskSchemaVersion:   "v1",                         // Required by ShipmentRiskTaskDefinition.ValidateCommand
-		OutputSchemaVersion: "v1",                         // Required by ShipmentRiskTaskDefinition.ValidateCommand
-		Subjects: []domain.EntityReference{ // Required by ShipmentRiskTaskDefinition.ValidateCommand
+		RequestID:           "req-abc-123",
+		TaskType:            domain.TaskShipmentDelayRisk,
+		TaskSchemaVersion:   "shipment_delay_risk.v1",
+		Prompt:              "Classify shipment delay risk.",
+		PromptVersion:       "shipment-delay-risk.prompt.v1",
+		OutputSchemaVersion: "shipment_delay_risk.result.v1",
+		MaxTokens:           256,
+		Subjects: []domain.EntityReference{
 			{
 				Type: domain.EntityShipment,
-				ID:   "ship-123",
+				ID:   "SH-123",
 			},
+		},
+		EvidenceRefs: []domain.EvidenceReference{
+			{EvidenceID: "EV-001"},
 		},
 		Deadline: time.Now().Add(5 * time.Second),
 	}
