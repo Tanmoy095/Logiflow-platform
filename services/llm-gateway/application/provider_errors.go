@@ -1,3 +1,5 @@
+//services/llm-gateway/application/provider_errors.go
+
 package application
 
 import (
@@ -70,6 +72,8 @@ func IsRetryableProviderError(err error) bool {
 	return false
 }
 
+//IsFallbackEligibleProviderError: Extends retryability rules to include AttemptTimeoutError. If an individual attempt to OpenAI times out, but the caller's overall connection is still healthy, the error is marked safe to hand over to a fallback provider (like Gemini).
+
 func IsFallbackEligibleProviderError(err error) bool {
 	if err == nil {
 		return false
@@ -85,3 +89,6 @@ func IsFallbackEligibleProviderError(err error) bool {
 
 	return IsRetryableProviderError(err)
 }
+
+
+
