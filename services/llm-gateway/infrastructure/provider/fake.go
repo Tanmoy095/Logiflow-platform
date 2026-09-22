@@ -137,12 +137,12 @@ func (f *FakeProvider) Complete(ctx context.Context, _ application.ProviderReque
 	// failures — e.g. an upstream 503 that still consumed tokens).
 	if err != nil {
 		return application.ProviderResponse{
-			Provider:     providerName,
-			Model:        modelName,
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
-			TotalTokens:  inputTokens + outputTokens,
-			EstimatedUSD: estimatedCost,
+			Provider:         providerName,
+			Model:            modelName,
+			InputTokens:      inputTokens,
+			OutputTokens:     outputTokens,
+			TotalTokens:      inputTokens + outputTokens,
+			EstimatedCostUSD: estimatedCost,
 		}, err
 	}
 
@@ -151,13 +151,13 @@ func (f *FakeProvider) Complete(ctx context.Context, _ application.ProviderReque
 	// field and aggregates across retries and fallbacks. Providers only
 	// report what they themselves know: output, identity, and usage.
 	return application.ProviderResponse{
-		RawOutput:    response,
-		Provider:     providerName,
-		Model:        modelName,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  inputTokens + outputTokens,
-		EstimatedUSD: estimatedCost,
+		RawOutput:        response,
+		Provider:         providerName,
+		Model:            modelName,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		TotalTokens:      inputTokens + outputTokens,
+		EstimatedCostUSD: estimatedCost,
 	}, nil
 }
 

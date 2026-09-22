@@ -439,9 +439,9 @@ JSON syntax
             ↓
 Output schema
             ↓
-Shipment-risk policy
+ShipmentRiskResult
             ↓
-shipmentrisk.Result
+shipmentrisk.Policy.Validate
 ```
 
 The capability result keeps its explicit type name:
@@ -520,14 +520,28 @@ unsupported_task
 contract_mismatch
 request_canceled
 deadline_exceeded
-provider_timeout
 provider_unavailable
-provider_rate_limited
-provider_bad_request
-provider_authentication
 validation_failed
+invalid_event
 internal
 ```
+
+These are the application-facing, transport-neutral `domain.Kind` values.
+The router separately uses the infrastructure-facing `ProviderFailureKind`
+values:
+
+```text
+unavailable
+rate_limited
+server_error
+authentication
+invalid_request
+```
+
+The domain taxonomy is the caller-facing category. `ProviderFailureKind` is a
+routing signal consumed only by `ProviderRouter`; the application deliberately
+collapses those provider failure values into `KindProviderUnavailable` at the
+Stage 6 boundary so callers never need to know vendor-specific distinctions.
 
 The domain error taxonomy is transport-neutral. `DomainError` supports
 category matching with Go's standard `errors.Is` API while retaining an
@@ -541,9 +555,20 @@ if errors.Is(err, &domain.DomainError{
 }
 ```
 
+`DomainError.Is(target error) bool` matches on `Kind` only, so callers can
+match by category without declaring a package-level sentinel for every kind.
+
 Provider timeout is not a separate application error kind. The application
 reports caller or effective-deadline exhaustion as `deadline_exceeded`, and
 provider routing exhaustion as `provider_unavailable`.
+
+### Provider timeout versus deadline exceeded
+
+If the caller's deadline or the effective command deadline expires, the
+application reports `deadline_exceeded`. If all providers are exhausted
+without a caller-side timeout, it reports `provider_unavailable`. The router
+still distinguishes its own per-attempt timeout internally with
+`AttemptTimeoutError`, but that type never escapes the router.
 
 A provider error is not the same thing as a successful provider response that fails validation.
 
@@ -647,6 +672,23 @@ caller request deadline expired
 ```
 
 The router uses an explicit `AttemptTimeoutError` boundary so its own timeout does not get mistaken for caller exhaustion.
+
+### Read `attemptCtx.Err()` before `cancel()`
+
+This ordering is load-bearing. `context.WithTimeout` returns a context and a
+cancel function; calling `cancel()` forces `attemptCtx.Err()` to become
+`context.Canceled`, even when the context actually expired because its timer
+fired. The router therefore captures the error first:
+
+```go
+attemptErr := attemptCtx.Err()
+cancel()
+```
+
+Reading the error before cancellation preserves the distinction between the
+router's own per-attempt budget (`context.DeadlineExceeded`, which can be
+wrapped as `AttemptTimeoutError`) and caller cancellation (`context.Canceled`,
+which must not be retried). Any refactor must preserve this ordering.
 
 ---
 
@@ -810,6 +852,55 @@ flowchart TD
 
 The service does not persist business state in a database as part of the core completion path.
 
+### The 8-stage pipeline
+
+The service enforces a fixed cheapest-first order. Preflight rejection never
+spends money on a provider call:
+
+```text
+Stage 1 — Command shape validation          (in-process, free)
+Stage 2 — Domain execution policy           (in-process, free)
+Stage 3 — Task resolution from registry     (in-process, free)
+Stage 4 — Capability contract validation    (in-process, free)
+Stage 5 — Caller context pre-flight         (in-process, free)
+Stage 6 — Provider invocation               (network, expensive)
+Stage 7 — Output decode + validation        (trust boundary)
+Stage 8 — Success finalization + telemetry
+```
+
+| Stage | Failure kind                                                      | Execution status                                                                           | Provider called? | Usage event? |
+| ----- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------- | ------------ |
+| 1     | `invalid_argument`                                                | `execution_preflight_failed`                                                               | No               | No           |
+| 2     | `contract_mismatch`                                               | `execution_preflight_failed`                                                               | No               | No           |
+| 3     | `unsupported_task`                                                | `execution_unsupported_task`                                                               | No               | No           |
+| 4     | `contract_mismatch`                                               | `execution_preflight_failed`                                                               | No               | No           |
+| 5     | `request_canceled` / `deadline_exceeded`                          | `execution_request_canceled` / `execution_deadline_exceeded`                               | No               | No           |
+| 6     | `request_canceled` / `deadline_exceeded` / `provider_unavailable` | `execution_request_canceled` / `execution_deadline_exceeded` / `execution_provider_failed` | Yes              | Yes          |
+| 7     | `validation_failed`                                               | `execution_validation_failed`                                                              | Yes              | Yes          |
+| 8     | none                                                              | `execution_succeeded`                                                                      | Yes              | Yes          |
+
+The billing invariant is: no provider invocation means no token usage event;
+provider invocation means a usage event is attempted, even when the provider
+fails or its output is unusable.
+
+### Dependency injection and fail-fast construction
+
+`NewService` requires six dependencies. Missing required dependencies are
+rejected at boot rather than discovered during a request:
+
+| Dependency               | Required?       | Rationale                                                                |
+| ------------------------ | --------------- | ------------------------------------------------------------------------ |
+| `Provider`               | Yes             | External AI execution is the gateway's core work.                        |
+| `TaskRegistry`           | Yes             | No registered capabilities means no service.                             |
+| `domain.ExecutionPolicy` | Yes, configured | A gateway without policy is a security bug.                              |
+| `UsagePublisher`         | No              | `nil` explicitly disables telemetry for minimal deployments.             |
+| `Clock`                  | Yes             | Prevents hidden wall-clock nondeterminism in tests.                      |
+| `EventIDGenerator`       | Yes             | Makes event identity deterministic in tests and swappable in production. |
+
+`executionPolicy` is a value type, so it cannot be nil-checked. The
+constructor instead requires a non-empty `CurrentContractVersion`, preserving
+the fail-fast guarantee.
+
 ---
 
 ### Target Infrastructure Request Flow
@@ -865,12 +956,17 @@ Representative fields include:
 
 ```text
 request_id
+tenant_id
+contract_version
+task_type
+task_schema_version
+output_schema_version
 provider
 model
 prompt_version
-task_type
-execution_status
 validation_status
+status
+error_kind
 provider_latency_ms
 validation_latency_ms
 total_gateway_latency_ms
@@ -878,8 +974,12 @@ input_tokens
 output_tokens
 total_tokens
 estimated_cost_usd
-retry_count
+attempts
 ```
+
+`attempts` is the aggregate count from `ProviderRouter`: the total across all
+retries and all providers for the request, not the per-provider attempt count.
+Billing uses it to reflect true vendor-call economics.
 
 This makes the system diagnosable without storing raw model content in operational telemetry.
 
@@ -903,7 +1003,7 @@ AIUsageEvent
 ├── total_tokens
 ├── estimated_cost_usd
 ├── attempts
-├── execution_status
+├── status
 ├── validation_status
 └── occurred_at
 ```
@@ -933,10 +1033,31 @@ validation failed
 
 The execution fact remains auditable.
 
-Before publication, the domain validates the event contract. It rejects
-whitespace-only required strings, missing execution or validation status,
-negative token counts, inconsistent token arithmetic, non-finite or negative
-estimated cost, negative attempt counts, and a zero occurrence time:
+### Domain validation of `AIUsageEvent`
+
+Before publication, `AIUsageEvent.Validate()` enforces:
+
+```text
+event_id, event_version, tenant_id, request_id, task_type
+    = non-blank after trimming
+status, validation_status
+    = non-blank after trimming
+input_tokens, output_tokens, total_tokens
+    = non-negative
+total_tokens
+    = input_tokens + output_tokens
+estimated_cost_usd
+    = finite (not NaN or Inf) and >= 0
+attempts
+    >= 0
+occurred_at
+    = non-zero
+```
+
+The total-token invariant catches integration bugs where a provider or router
+corrupts the arithmetic. The finite-value cost check prevents `NaN` or `Inf`
+from silently corrupting billing. Invalid events are dropped by the
+best-effort publication seam rather than returned to the business caller.
 
 ```text
 total_tokens = input_tokens + output_tokens
@@ -969,7 +1090,7 @@ The application constructs and validates the event synchronously, then dispatche
 ```text
 event construction / validation
           ↓
-context.WithoutCancel(parent context)
+context.WithoutCancel(parentCtx)
           ↓
 goroutine → UsagePublisher.PublishUsageEvent(...)
           ↓
@@ -982,6 +1103,13 @@ The bridge has these guarantees and limits:
 - a missing publisher, event-ID failure, or event-validation failure drops the event;
 - caller cancellation and deadlines do not cancel the background publication, while context values remain available for tracing and scoping;
 - publication is not durable and may be lost if the process exits before the goroutine completes.
+
+`context.WithoutCancel` preserves values such as trace span IDs, tenant
+scoping, and request metadata while stripping cancellation and deadlines.
+`context.Background()` would lose that trace context and create an orphan
+publish span; the plain caller context would abort publication on client
+disconnect. The parent context is used only for its values, never for its
+cancellation signal.
 
 The hot completion path therefore does not couple business-result latency to publisher I/O or an external billing database. This seam must eventually be replaced or backed by an outbox or durable Kafka producer when billing requires at-least-once delivery.
 
@@ -1042,11 +1170,18 @@ Avoid putting the following into ordinary Prometheus labels:
 
 ```text
 tenant_id
+tenant_id
+contract_version
+task_type
+task_schema_version
+output_schema_version
 request_id
-evidence_id
-prompt
-full document content
+provider
+model
+status
 ```
+
+error_kind
 
 Prometheus documents that every unique label combination becomes a distinct time series and specifically warns against high-cardinality labels such as unbounded IDs. citeturn922623search0turn922623search15
 
@@ -1054,7 +1189,11 @@ Prometheus documents that every unique label combination becomes a distinct time
 
 # 26. Tracing Contract
 
-A gateway request is represented as a trace with meaningful child operations.
+attempts
+
+`attempts` is the aggregate count from `ProviderRouter`: the total across all
+retries and all providers for the request, not the per-provider attempt count.
+Billing uses it to reflect true vendor-call economics.
 
 ```text
 llm.gateway.request
@@ -1479,6 +1618,45 @@ Each level proves a different claim.
 
 ---
 
+# 38. Testing Infrastructure
+
+The gateway's tests use deterministic doubles that exercise the same
+application ports as production adapters without network access.
+
+### `FakeProvider`
+
+`infrastructure/provider/fake.go` provides a deterministic, mutex-protected
+provider adapter. It:
+
+- honors context cancellation during simulated `Delay`;
+- returns a populated `ProviderResponse` on failure as well as success, so
+  partial usage can be exercised;
+- exposes typed `ProviderError` values such as `ErrUnavailable`,
+  `ErrRateLimited`, `ErrServerError`, `ErrAuthentication`, and
+  `ErrInvalidRequest` for router classification;
+- tracks calls so tests can assert whether provider work happened;
+- is guarded by a mutex so `go test -race` remains clean.
+
+### `testClock`
+
+The application test clock advances by 1 ms on each `Now()` call. A mutex
+guards its internal time, making latency assertions non-zero, deterministic,
+and safe for parallel tests without depending on wall-clock time.
+
+### `chanPublisher`
+
+The test `UsagePublisher` writes to a buffered channel. Tests synchronize on
+the asynchronous publication by receiving from the channel rather than using
+`time.Sleep`. Its companion `assertNoEvent` helper verifies that preflight
+rejections do not emit usage events.
+
+### `flakyProvider`
+
+The scripted provider changes behavior across calls, allowing tests to model
+"fail once, succeed on retry" behavior that a static fake cannot represent.
+
+---
+
 ## Communication Choices
 
 ### Why gRPC for completion requests?
@@ -1493,7 +1671,7 @@ Usage and billing reconciliation do not need to block the completion response. T
 
 Synchronous PostgreSQL billing writes add transaction latency, connection-pool pressure, and financial-database availability to every AI request. The target design keeps the authoritative ledger in the billing service and moves accounting off the completion path through a durable usage event.
 
-# 38. Build And Runtime Validation
+# 39. Build And Runtime Validation
 
 Repository validation:
 
@@ -1541,7 +1719,7 @@ kubectl get pods -n logiflow-dev
 
 ---
 
-# 39. Observability Ownership Map
+# 40. Observability Ownership Map
 
 ```text
 Application Service
@@ -1578,7 +1756,7 @@ Kubernetes/runtime problem
 
 ---
 
-# 40. Latency Accounting
+# 41. Latency Accounting
 
 The service records decomposed latency rather than one opaque duration.
 
@@ -1609,7 +1787,7 @@ This decomposition is more actionable than a single end-to-end histogram.
 
 ---
 
-# 41. Privacy-Safe Telemetry
+# 42. Privacy-Safe Telemetry
 
 Telemetry must not become an accidental shadow database for sensitive evidence.
 
@@ -1645,7 +1823,7 @@ Detailed per-request payload debugging belongs in tightly controlled diagnostic 
 
 ---
 
-# 42. Deployment And Availability Model
+# 43. Deployment And Availability Model
 
 The service is designed to run as multiple interchangeable replicas.
 
@@ -1696,7 +1874,7 @@ The repository currently provides the deployable service scaffold and the policy
 
 The system design is intentionally forward-looking, but implementation claims should always be checked against the service source tree and current deployment manifests.
 
-# 43. Design Decision Register
+# 44. Design Decision Register
 
 ## ADR-011 — Governed Generic Completion Contract
 
@@ -1823,9 +2001,109 @@ Retries and fallback can increase latency and cost and can change provider/model
 
 ---
 
+## ADR-016 — Injected Clock And EventIDGenerator
+
+### Context
+
+Latency measurement and event identification require time and randomness,
+which are non-deterministic by default.
+
+### Decision
+
+Inject a `Clock` interface and an `EventIDGenerator` function into `Service` at
+construction. Reject nil dependencies at boot.
+
+### Rationale
+
+Tests can advance time deterministically and assert on specific event IDs.
+Production can supply real implementations without changing application code.
+A silent `time.Now()` fallback would hide non-determinism in CI.
+
+### Trade-off
+
+The constructor has two extra parameters, but every test is deterministic and
+deployments remain swappable.
+
+---
+
+## ADR-017 — Fail-Fast Constructor Validation
+
+### Context
+
+A missing dependency otherwise appears as a runtime panic or a 500 response,
+long after a deployment wiring error could have been caught.
+
+### Decision
+
+`NewService` validates `Provider`, `TaskRegistry`, `Clock`, and
+`EventIDGenerator`, and rejects an unconfigured `ExecutionPolicy` by checking
+`CurrentContractVersion`. `UsagePublisher` is the only optional dependency.
+
+### Rationale
+
+A wiring bug is a boot-time problem. Startup failure turns a late incident
+into a deploy-time error with a clear message.
+
+### Trade-off
+
+The constructor contains slightly more validation; runtime request handling
+does not need to defend against missing required dependencies.
+
+---
+
+## ADR-018 — Usage Events Only After Provider Invocation
+
+### Context
+
+Usage events feed billing, so billing must reflect provider work that actually
+happened.
+
+### Decision
+
+Attempt publication if and only if a provider was invoked. Preflight rejection
+stages publish nothing; provider failures, validation failures, and successful
+completion all publish usage metadata.
+
+### Rationale
+
+No provider invocation means no tokens were consumed. Provider invocation can
+consume tokens even when the response fails validation, so those events remain
+billable and carry their validation status.
+
+### Trade-off
+
+Validation failures generate usage events, so billing consumers must process
+events whose business result was not trusted.
+
+---
+
+## ADR-019 — DomainError.Is For Category Matching
+
+### Context
+
+Callers need to distinguish categories such as `KindValidationFailed` and
+`KindProviderUnavailable` without string comparison or one sentinel per kind.
+
+### Decision
+
+Implement `Is(target error) bool` on `DomainError` and match on `Kind`. Callers
+use `errors.Is(err, &domain.DomainError{Kind: domain.KindX})`.
+
+### Rationale
+
+Category matching remains stable when human-readable messages change and uses
+the standard library's error model.
+
+### Trade-off
+
+Callers construct a small `DomainError` value for matching, which is cheap and
+idiomatic.
+
+---
+
 The old HLD's infrastructure decisions remain part of the architecture contract: synchronous completion is separated from asynchronous accounting; Redis enforces shared hot-path controls; billing owns the authoritative ledger; provider reliability is isolated from domain correctness; and fallback results re-enter the same trust pipeline as primary results.
 
-# 44. Architecture Trade-Off Matrix
+# 45. Architecture Trade-Off Matrix
 
 | Decision area        | Chosen approach               | Why                                   | Main trade-off                               |
 | -------------------- | ----------------------------- | ------------------------------------- | -------------------------------------------- |
@@ -1845,7 +2123,7 @@ The old HLD's infrastructure decisions remain part of the architecture contract:
 
 ---
 
-# 45. Runtime Ownership Map
+# 46. Runtime Ownership Map
 
 ```text
 Business evidence
@@ -1881,7 +2159,7 @@ The gateway connects these systems; it does not absorb ownership from them.
 
 ---
 
-# 46. Engineering Invariants
+# 47. Engineering Invariants
 
 The following invariants are stronger than implementation details.
 
@@ -1925,9 +2203,27 @@ Observability does not become an ungoverned copy of sensitive AI input.
 
 Runtime configuration and desired deployment state are version-controlled and validated.
 
+### Invariant 11 — Dependencies are injected, never defaulted
+
+Provider, registry, policy, clock, and event ID generation are injected.
+Silent fallbacks hide wiring bugs and make tests non-deterministic.
+
+### Invariant 12 — Usage events fire only after provider invocation
+
+Preflight rejection stages do not publish usage events because no tokens were
+consumed. Any stage after provider invocation attempts publication, including
+provider failure and output-validation failure, because the provider may have
+charged for the work regardless of result quality.
+
+### Invariant 13 — Clock and event ID generation are the only non-provider nondeterminism
+
+The service has no other access to wall-clock time, random values, or global
+state. Tests are deterministic, and replay scenarios are reproducible given
+the same clock and event-ID sequences.
+
 ---
 
-# 47. Design Review Checklist
+# 48. Design Review Checklist
 
 A gateway change is architecturally complete when reviewers can answer all of these questions:
 
@@ -1982,7 +2278,7 @@ A gateway change is architecturally complete when reviewers can answer all of th
 
 ---
 
-# 48. Implementation Roadmap
+# 49. Implementation Roadmap
 
 The design can be implemented incrementally without changing the bounded context:
 
@@ -2015,7 +2311,7 @@ scale / optimization
 
 This prevents optimization work such as caching or provider pooling from becoming a substitute for correct ownership, validation, and failure semantics.
 
-# 49. Summary
+# 50. Summary
 
 The central architecture is:
 
@@ -2072,12 +2368,20 @@ deployment
 
 Each concern has one owner, a small interface, explicit invariants, deterministic tests, and a clear operational boundary.
 
+> **What this design optimizes for:** Every concern has exactly one owner.
+> Business rules never know about HTTP. The application never knows about
+> OpenAI. The router never knows about shipments. Billing never has to parse
+> error strings. Tests never touch the network.
+
 ---
 
-# 50. References
+# 51. References
 
 - OpenTelemetry Semantic Conventions: https://opentelemetry.io/docs/specs/semconv/
 - Prometheus Naming and Labels: https://prometheus.io/docs/practices/naming/
 - Kubernetes: https://kubernetes.io/docs/
 - Argo CD Declarative Setup: https://argo-cd.readthedocs.io/en/latest/operator-manual/declarative-setup/
 - System Design Primer: https://github.com/donnemartin/system-design-primer
+- LogiFlow Repository — `services/llm-gateway/application/service.go`
+  The 8-stage pipeline orchestrator. Read this file after the design document
+  to see how each stage is implemented.

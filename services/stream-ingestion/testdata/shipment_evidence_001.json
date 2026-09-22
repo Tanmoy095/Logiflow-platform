@@ -1,27 +1,51 @@
 {
+  "_comment": [
+    "Canonical shipment-evidence fixture shared by stream-ingestion and llm-gateway tests.",
+    "Owned by stream-ingestion; consumed read-only by the gateway's fixture adapter.",
+    "Contract:",
+    "  - shipment_id is the authoritative identity. The gateway uses it as the",
+    "    subject reference and validates that the provider's response echoes it back.",
+    "  - evidence is a list of human-readable operational facts. It is embedded into",
+    "    the prompt; it must NOT be copied into telemetry or usage events.",
+    "  - events are historical; expected_delivery_date is the comparison baseline.",
+    "  - Any schema change here must be versioned and reflected in the adapter at",
+    "    services/llm-gateway/application/fixture_test.go.",
+    "Note: the JSON format does not support comments; _comment is an ignored field."
+  ],
+
   "shipment_id": "ship-123",
   "carrier": "DHL",
   "origin": "Dhaka",
   "destination": "Singapore",
+
   "invoice": {
     "invoice_id": "INV-2026-001",
     "amount_usd": 1840.5,
     "currency": "USD"
   },
+
+  "_status_comment": "in_transit implies the shipment has not yet been delivered; delay risk is computed against expected_delivery_date below.",
   "shipment_status": "in_transit",
+
+  "_expected_delivery_date_comment": "The date the customer was promised. Any event after this date increases delay risk.",
   "expected_delivery_date": "2026-08-29",
+
   "events": [
     {
+      "_comment": "Customs event indicates the shipment is stuck at a border. High correlation with delay.",
       "timestamp": "2026-08-27T09:30:00Z",
       "type": "customs_delay",
       "description": "Customs clearance document requires additional review"
     },
     {
+      "_comment": "Carrier update confirms the shipment has not moved. Reinforces the customs event above.",
       "timestamp": "2026-08-28T14:00:00Z",
       "type": "carrier_update",
       "description": "Shipment remains at customs facility"
     }
   ],
+
+  "_evidence_comment": "These strings are rendered into the prompt as bullet points. They must remain human-readable and must NOT contain IDs that could leak tenant internals.",
   "evidence": [
     "Carrier reported customs clearance delay",
     "Expected delivery date has been exceeded"

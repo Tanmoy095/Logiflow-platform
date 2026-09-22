@@ -1,5 +1,26 @@
 // services/llm-gateway/application/fixture_test.go
-
+//
+// Fixture-driven integration tests for Service.Complete.
+//
+// Unlike the pure unit tests in service_test.go, these tests exercise the
+// full pipeline using a realistic shipment-evidence fixture that is shared
+// with the stream-ingestion service. The fixture is the canonical example
+// of what an upstream pipeline produces; the gateway must be able to
+// consume it without losing identity or fabricating results.
+//
+// Two guarantees are verified here:
+//
+//  1. A well-formed fixture flows all the way through the 8-stage pipeline
+//     and produces a trusted ShipmentRiskResult whose identity matches the
+//     input.
+//
+//  2. A broken fixture (missing shipment identity) is rejected at the
+//     application preflight boundary — the gateway never fabricates a
+//     trusted result from incomplete input.
+//
+// The fixture adapter below deliberately keeps the JSON shape and the
+// application contract decoupled: if the fixture evolves, only the adapter
+// changes, not the Service or the domain.
 package application_test
 
 import (
@@ -8,16 +29,25 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/application"
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain"
+	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/domain/shipmentrisk"
 	"github.com/Tanmoy095/LogiFlow-Platform/services/llm-gateway/infrastructure/provider"
 )
 
-// shipmentEvidenceFixture mirrors the structure of the test fixture JSON.
-// It exists only in test code to load external representation.
-// It is NOT a domain type; domain.Request is the normalized application input.
+// =============================================================================
+// Fixture representation
+// =============================================================================
+//
+// shipmentEvidenceFixture mirrors the JSON structure owned by the
+// stream-ingestion service. It exists only in test code to deserialize the
+// fixture file. It is NOT a domain type — the normalized representation
+// the application consumes is application.CompleteCommand.
 type shipmentEvidenceFixture struct {
 	ShipmentID           string `json:"shipment_id"`
 	Carrier              string `json:"carrier"`
@@ -41,18 +71,34 @@ type shipmentEvidenceFixture struct {
 	Evidence []string `json:"evidence"`
 }
 
-// loadShipmentFixture loads the deterministic shipment evidence fixture
-// from the stream-ingestion testdata directory.
+// =============================================================================
+// Fixture loading
+// =============================================================================
+
+// loadShipmentFixture loads the deterministic shipment-evidence fixture from
+// the stream-ingestion testdata directory.
 //
-// The path is relative to the package directory. For a more robust
-// CI setup, this could be resolved using runtime.Caller or a configurable
-// fixture root, but that is intentionally deferred for now.
+// The path is resolved using runtime.Caller rather than a relative path.
+// A relative path like ../../stream-ingestion/... depends on the working
+// directory at test time, which breaks if the test package is ever moved
+// or if the test runner changes its working directory (e.g. in some CI
+// sandboxes). runtime.Caller gives us the source file location, so the
+// path is stable regardless of cwd.
 func loadShipmentFixture(t *testing.T) shipmentEvidenceFixture {
 	t.Helper()
 
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed; cannot resolve fixture path")
+	}
+
+	// thisFile = .../services/llm-gateway/application/fixture_test.go
+	// We want   .../services/stream-ingestion/testdata/shipment_evidence_001.json
+	// So from the package dir we go up two levels to services/, then into
+	// stream-ingestion/testdata.
 	path := filepath.Join(
-		"..",
-		"..",
+		filepath.Dir(thisFile),
+		"..", "..",
 		"stream-ingestion",
 		"testdata",
 		"shipment_evidence_001.json",
@@ -60,30 +106,70 @@ func loadShipmentFixture(t *testing.T) shipmentEvidenceFixture {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatalf("read fixture %s: %v", path, err)
 	}
 
 	var fixture shipmentEvidenceFixture
 	if err := json.Unmarshal(data, &fixture); err != nil {
-		t.Fatalf("decode fixture: %v", err)
+		t.Fatalf("decode fixture %s: %v", path, err)
 	}
-
 	return fixture
 }
 
-// fixtureToRequest is an Adapter: it translates the test fixture
-// representation into the domain.Request shape expected by the application.
-// This keeps domain/application code decoupled from the fixture format.
-func fixtureToRequest(f shipmentEvidenceFixture) domain.Request {
-	return domain.Request{
-		ShipmentID:    f.ShipmentID,
+// =============================================================================
+// Fixture → application adapter
+// =============================================================================
+
+// fixtureToCommand is an anti-corruption adapter.
+//
+// It translates the raw fixture representation into the transport-neutral
+// application.CompleteCommand. Keeping this translation in the test file
+// (rather than in production code) ensures:
+//
+//   - the domain and application layers never depend on the fixture format;
+//   - a fixture schema change requires only an adapter change;
+//   - the adapter itself is a place to catch identity drift (see the
+//     assertion in TestServiceComplete_ShipmentEvidenceFixture below).
+func fixtureToCommand(f shipmentEvidenceFixture) application.CompleteCommand {
+	return application.CompleteCommand{
+		ContractVersion: application.CurrentContractVersion,
+		TenantID:        "tenant-fixture-001",
+		RequestID:       "req-fixture-001",
+
+		TaskType:            domain.TaskShipmentDelayRisk,
+		TaskSchemaVersion:   shipmentrisk.TaskSchemaVersion,
+		OutputSchemaVersion: shipmentrisk.ResultSchemaVersion,
+
 		Prompt:        buildRiskPrompt(f),
-		PromptVersion: "v1",
+		PromptVersion: "shipment-delay-risk.prompt.v1",
+		MaxTokens:     256,
+
+		// Subjects carry the business identity the capability must
+		// evaluate. The adapter preserves it verbatim so the
+		// identity-correlation check inside DecodeAndValidate has
+		// something trustworthy to compare against.
+		Subjects: []domain.EntityReference{{
+			Type: domain.EntityShipment,
+			ID:   f.ShipmentID,
+		}},
+
+		EvidenceRefs: []domain.EvidenceReference{{
+			EvidenceID: "EV-FIXTURE-001",
+		}},
+
+		Deadline: time.Now().Add(5 * time.Second),
 	}
 }
 
-// buildRiskPrompt constructs a deterministic prompt from shipment evidence.
-// In a production system this would be a proper prompt builder/registry.
+// buildRiskPrompt constructs a deterministic prompt from the fixture.
+//
+// In production this would be a versioned prompt-builder registered per
+// capability. Here it is inline for test simplicity, but its two
+// properties matter:
+//
+//   - it must be deterministic (so tests are reproducible),
+//   - it must contain the shipment identity (so the model has what it
+//     needs to answer the correlation question correctly).
 func buildRiskPrompt(f shipmentEvidenceFixture) string {
 	prompt := "Analyze the shipment risk using the following evidence.\n\n" +
 		"Shipment ID: " + f.ShipmentID + "\n" +
@@ -104,8 +190,13 @@ func buildRiskPrompt(f shipmentEvidenceFixture) string {
 	return prompt
 }
 
-// validFixtureProviderResponse is a deterministic fake provider response
-// that matches the fixture's shipment_id and passes validation.
+// =============================================================================
+// Deterministic provider responses
+// =============================================================================
+
+// validFixtureProviderResponse is a deterministic FakeProvider response whose
+// shipment_id matches the fixture (ship-123). The pipeline should accept it
+// without any modification.
 const validFixtureProviderResponse = `{
 	"shipment_id": "ship-123",
 	"risk": "high_risk",
@@ -116,80 +207,220 @@ const validFixtureProviderResponse = `{
 	]
 }`
 
-// TestServiceComplete_ShipmentEvidenceFixture verifies that a realistic
-// shipment evidence fixture can be mapped to a request, passed through the
-// gateway, and produce a trusted result with correct identity.
-func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
-	fixture := loadShipmentFixture(t)
+// =============================================================================
+// Test doubles (mirrors service_test.go)
+// =============================================================================
+//
+// These mirror the helpers in service_test.go. If the fixture test grows to
+// share more helpers, promote them to a testutil package. For now, keeping
+// them local avoids a cross-package dependency for two small helpers.
 
-	req := fixtureToRequest(fixture)
+type fixtureTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
 
-	// Explicitly confirm that the adapter preserves shipment identity.
-	if req.ShipmentID != fixture.ShipmentID {
-		t.Fatalf(
-			"adapter changed shipment identity: fixture = %q, request = %q",
-			fixture.ShipmentID,
-			req.ShipmentID,
-		)
-	}
-
-	fake := provider.NewFakeProvider(validFixtureProviderResponse)
-	service := application.NewService(fake)
-
-	// Complete now returns (result, metadata, error). We ignore metadata here
-	// because this test focuses on domain correctness, not observability.
-	result, _, err := service.Complete(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Complete() returned unexpected error: %v", err)
-	}
-
-	// Verify the trusted result matches the original fixture identity.
-	if result.ShipmentID != fixture.ShipmentID {
-		t.Fatalf("result shipment_id = %q, want %q", result.ShipmentID, fixture.ShipmentID)
-	}
-
-	if result.Risk != domain.RiskHighRisk {
-		t.Fatalf("result risk = %q, want %q", result.Risk, domain.RiskHighRisk)
-	}
-
-	if result.Confidence <= 0 || result.Confidence > 1 {
-		t.Fatalf("result confidence = %v, outside [0,1]", result.Confidence)
-	}
-
-	if len(result.Reasons) == 0 {
-		t.Fatal("expected at least one reason")
+func newFixtureTestClock() *fixtureTestClock {
+	return &fixtureTestClock{
+		now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
 
-// TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID verifies that
-// a missing shipment identity is rejected at the application boundary
-// and no trusted result is fabricated.
+func (c *fixtureTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(time.Millisecond)
+	return c.now
+}
+
+func newFixtureTestEventIDGen() application.EventIDGenerator {
+	var n int64
+	var mu sync.Mutex
+	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		return "evt-fixture-" + time.Duration(n).String(), nil
+	}
+}
+
+// setupFixtureService wires a Service with a FakeProvider and deterministic
+// clock/ID generator. usagePublisher is intentionally nil — these fixture
+// tests focus on the trusted-result contract, not telemetry.
+func setupFixtureService(t *testing.T, p application.Provider) *application.Service {
+	t.Helper()
+
+	registry, err := application.NewTaskRegistry(application.NewShipmentRiskTaskDefinition())
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	svc, err := application.NewService(
+		p,
+		registry,
+		domain.ExecutionPolicy{
+			CurrentContractVersion: application.CurrentContractVersion,
+			MaxEvidenceReferences:  32,
+		},
+		nil, // telemetry disabled for this test
+		newFixtureTestClock(),
+		newFixtureTestEventIDGen(),
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return svc
+}
+
+// =============================================================================
+// Test 1 — happy path through the pipeline
+// =============================================================================
+
+// TestServiceComplete_ShipmentEvidenceFixture verifies that a realistic
+// shipment-evidence fixture can be:
 //
-// This test also confirms that the error is typed as a *domain.DomainError
-// with KindInvalidArgument, aligning with the Wednesday error taxonomy.
+//  1. loaded from disk,
+//  2. adapted into the application command,
+//  3. passed through the full 8-stage pipeline,
+//  4. promoted into a trusted ShipmentRiskResult,
+//  5. returned with identity that matches the original fixture.
+//
+// The adapter assertion ("adapter preserved shipment identity") is
+// deliberately placed BEFORE the service call. If the adapter itself is
+// buggy, we want the failure to point at the adapter — not at the service.
+func TestServiceComplete_ShipmentEvidenceFixture(t *testing.T) {
+	fixture := loadShipmentFixture(t)
+	cmd := fixtureToCommand(fixture)
+
+	// Sanity check: the adapter must not silently drop or rewrite the
+	// shipment identity. If this fails, every downstream assertion becomes
+	// meaningless because the pipeline was fed the wrong subject.
+	if cmd.Subjects[0].ID != fixture.ShipmentID {
+		t.Fatalf(
+			"adapter changed shipment identity: fixture = %q, command = %q",
+			fixture.ShipmentID,
+			cmd.Subjects[0].ID,
+		)
+	}
+
+	fake := provider.NewFakeProvider("fixture-fake", "model-fixture", validFixtureProviderResponse)
+	svc := setupFixtureService(t, fake)
+
+	result, metadata, err := svc.Complete(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Complete() returned nil result with nil error")
+	}
+
+	// ---- Success metadata --------------------------------------------
+	if metadata.Status != domain.ExecutionSucceeded {
+		t.Fatalf("metadata.Status = %q, want %q", metadata.Status, domain.ExecutionSucceeded)
+	}
+	if metadata.ValidationStatus != domain.ValidationPassed {
+		t.Fatalf("metadata.ValidationStatus = %q, want %q", metadata.ValidationStatus, domain.ValidationPassed)
+	}
+
+	// ---- Type-assert the generic TaskResult to the concrete domain type
+	// The Service returns the interface; only the caller knows which
+	// capability it invoked, so the assertion belongs here.
+	shipmentResult, ok := result.(shipmentrisk.ShipmentRiskResult)
+	if !ok {
+		t.Fatalf("result type = %T, want shipmentrisk.ShipmentRiskResult", result)
+	}
+
+	// ---- Trusted-result invariants -----------------------------------
+	if shipmentResult.ShipmentID != fixture.ShipmentID {
+		t.Fatalf(
+			"result.ShipmentID = %q, want %q",
+			shipmentResult.ShipmentID, fixture.ShipmentID,
+		)
+	}
+	if shipmentResult.Risk != shipmentrisk.RiskHighRisk {
+		t.Fatalf(
+			"result.Risk = %q, want %q",
+			shipmentResult.Risk, shipmentrisk.RiskHighRisk,
+		)
+	}
+	if shipmentResult.Confidence <= 0 || shipmentResult.Confidence > 1 {
+		t.Fatalf("result.Confidence = %v, outside (0, 1]", shipmentResult.Confidence)
+	}
+	if len(shipmentResult.Reasons) == 0 {
+		t.Fatal("expected at least one reason")
+	}
+
+	// ---- TaskResult identity seam ------------------------------------
+	// The generic application contract must be able to identify which
+	// capability produced this result without importing capability-
+	// specific fields.
+	if shipmentResult.TaskType() != domain.TaskShipmentDelayRisk {
+		t.Fatalf(
+			"result.TaskType() = %q, want %q",
+			shipmentResult.TaskType(), domain.TaskShipmentDelayRisk,
+		)
+	}
+}
+
+// =============================================================================
+// Test 2 — preflight rejection of missing identity
+// =============================================================================
+
+// TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID verifies
+// that a broken fixture is rejected at the application preflight boundary.
+//
+// Where the rejection happens: the adapter sets Subjects[0].ID = "". The
+// generic cmd.Validate() calls EntityReference.Validate() which rejects an
+// empty ID at Stage 1 (command shape validation). The Service therefore
+// returns a typed DomainError with Kind = KindInvalidArgument, and no
+// provider work is performed.
+//
+// This proves the invariant: "the gateway never fabricates a trusted
+// result from incomplete input." A missing identity is caught before a
+// vendor is ever called.
 func TestServiceComplete_ShipmentEvidenceFixture_MissingShipmentID(t *testing.T) {
 	fixture := loadShipmentFixture(t)
 	fixture.ShipmentID = "" // simulate broken fixture / missing identity
 
-	req := fixtureToRequest(fixture)
+	cmd := fixtureToCommand(fixture)
 
-	fake := provider.NewFakeProvider(validFixtureProviderResponse)
-	service := application.NewService(fake)
+	// Track provider invocations to prove no vendor spend occurred.
+	fake := provider.NewFakeProvider("fixture-fake", "model-fixture", validFixtureProviderResponse)
+	svc := setupFixtureService(t, fake)
 
-	// Complete returns three values; ignore metadata.
-	result, _, err := service.Complete(context.Background(), req)
+	result, metadata, err := svc.Complete(context.Background(), cmd)
 	if err == nil {
-		t.Fatal("Complete() error = nil, want request validation error")
+		t.Fatal("Complete() error = nil, want preflight validation error")
 	}
 
-	// Assert the error is a typed DomainError with KindInvalidArgument.
+	// ---- Typed error assertion ---------------------------------------
+	// The Service wraps preflight failures as *domain.DomainError so
+	// callers can branch on Kind without parsing strings.
 	var domainErr *domain.DomainError
 	if !errors.As(err, &domainErr) {
-		t.Fatalf("error = %v, want DomainError", err)
+		t.Fatalf("error = %v (%T), want *domain.DomainError", err, err)
 	}
 	if domainErr.Kind != domain.KindInvalidArgument {
-		t.Fatalf("error kind = %q, want %q", domainErr.Kind, domain.KindInvalidArgument)
+		t.Fatalf("error.Kind = %q, want %q", domainErr.Kind, domain.KindInvalidArgument)
 	}
 
-	assertNoTrustedResult(t, result)
+	// ---- No trusted result fabricated -------------------------------
+	if result != nil {
+		t.Fatalf("result = %v, want nil (no trusted result on failure)", result)
+	}
+
+	// ---- Failure metadata is still populated ------------------------
+	// Even on preflight rejection, the Service must set status fields so
+	// dashboards can classify the failure.
+	if metadata.Status != domain.ExecutionPreflightFailed {
+		t.Fatalf("metadata.Status = %q, want %q", metadata.Status, domain.ExecutionPreflightFailed)
+	}
+	if metadata.ErrorKind != domain.KindInvalidArgument {
+		t.Fatalf("metadata.ErrorKind = %q, want %q", metadata.ErrorKind, domain.KindInvalidArgument)
+	}
+
+	// ---- Billing invariant: no provider call, no tokens spent -------
+	if fake.Calls != 0 {
+		t.Fatalf("provider calls = %d, want 0 (preflight rejection must not call provider)", fake.Calls)
+	}
 }
