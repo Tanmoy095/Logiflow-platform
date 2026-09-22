@@ -363,12 +363,60 @@ services/llm-gateway/domain/
 - `EntityType`;
 - `EntityReference`;
 - `EvidenceReference`;
-- execution status;
-- validation status.
+- namespaced execution status;
+- namespaced validation status.
+
+Execution outcomes use an explicit `execution_` vocabulary rather than one
+catch-all `failed` value:
+
+```text
+execution_succeeded
+execution_preflight_failed
+execution_unsupported_task
+execution_provider_failed
+execution_validation_failed
+execution_request_canceled
+execution_deadline_exceeded
+```
+
+Validation outcomes use a separate `validation_` vocabulary:
+
+```text
+validation_not_run
+validation_passed
+validation_failed
+```
+
+Keeping execution status separate from validation status allows usage events
+to record that a provider consumed resources even when its output failed
+validation. The explicit prefixes also give dashboards and alerts stable,
+non-ambiguous dimensions without parsing error messages.
 
 ## Gateway-wide policy
 
 `domain/policy.go` validates execution invariants common to governed gateway operations.
+It accepts a domain-owned `ExecutionContext` rather than importing
+`application.CompleteCommand`:
+
+```go
+type ExecutionContext struct {
+    ContractVersion string
+    TenantID        string
+    RequestID       string
+    TaskType        TaskType
+    EvidenceRefs    []EvidenceReference
+    Now             time.Time
+}
+
+func (p ExecutionPolicy) ValidateExecutionContext(ctx ExecutionContext) error
+```
+
+`Now` allows future time-based rules without coupling the domain to a clock
+interface. `MaxEvidenceReferences` has explicit semantics: a positive value
+sets a maximum, zero means no evidence references are allowed, and a negative
+value opts into unlimited references. Evidence-reference structure is checked
+by the gateway; evidence existence and ownership remain with the evidence
+bounded context.
 
 ## Usage events
 
@@ -396,10 +444,10 @@ Shipment-risk policy
 shipmentrisk.Result
 ```
 
-Representative result shape:
+The capability result keeps its explicit type name:
 
 ```go
-type Result struct {
+type ShipmentRiskResult struct {
     ShipmentID string
     Risk       Risk
     Confidence float64
@@ -407,16 +455,22 @@ type Result struct {
 }
 ```
 
-The capability policy enforces rules such as:
+`ShipmentRiskResult.Validate()` owns intrinsic invariants:
 
 - shipment ID must exist;
-- shipment ID must match the requested subject;
 - risk must be one of the controlled values;
-- confidence must be finite;
-- `0.0 <= confidence <= 1.0`;
+- confidence must be finite and within `[0, 1]`;
 - `high_risk` requires non-empty reasons.
+- no reason may be blank.
 
-These rules are deterministic and independent of which provider produced the raw output.
+The capability policy delegates to `ShipmentRiskResult.Validate()` and is the
+extension point for cross-object rules. For example, verifying that the
+returned shipment ID matches the requested subject requires the application
+command and therefore remains above the domain result model.
+
+These rules are deterministic and independent of which provider produced the
+raw output. A finite-value check occurs before the confidence range check so
+`NaN` and infinities cannot bypass numeric validation.
 
 ---
 
@@ -474,6 +528,22 @@ provider_authentication
 validation_failed
 internal
 ```
+
+The domain error taxonomy is transport-neutral. `DomainError` supports
+category matching with Go's standard `errors.Is` API while retaining an
+underlying cause for diagnostics:
+
+```go
+if errors.Is(err, &domain.DomainError{
+    Kind: domain.KindValidationFailed,
+}) {
+    // Handle the validation-failure category.
+}
+```
+
+Provider timeout is not a separate application error kind. The application
+reports caller or effective-deadline exhaustion as `deadline_exceeded`, and
+provider routing exhaustion as `provider_unavailable`.
 
 A provider error is not the same thing as a successful provider response that fails validation.
 
@@ -776,12 +846,14 @@ sequenceDiagram
             else invalid
                 G-->>W: typed validation/refusal result
             end
-            G--)K: AIUsageEvent / UsageCostEvent
+            G--)K: best-effort async AIUsageEvent
         end
     end
     K->>B: consume usage fact
     B->>DB: authoritative billing transaction
 ```
+
+The usage publication shown above is a non-blocking best-effort bridge in the current gateway implementation. Event construction and validation happen before dispatch; the publisher call runs in a goroutine with caller cancellation and deadlines removed while preserving context values such as tracing metadata. A failed publication is intentionally not returned to the business caller. The bridge is not a durability guarantee: production-grade delivery requires an outbox or durable Kafka producer with at-least-once semantics and reconciliation.
 
 The exact production state model may evolve, but the ownership boundaries do not: Redis is shared operational state, Kafka is an event boundary, and the billing database remains owned by billing rather than by the LLM Gateway.
 
@@ -830,6 +902,7 @@ AIUsageEvent
 ├── output_tokens
 ├── total_tokens
 ├── estimated_cost_usd
+├── attempts
 ├── execution_status
 ├── validation_status
 └── occurred_at
@@ -860,6 +933,22 @@ validation failed
 
 The execution fact remains auditable.
 
+Before publication, the domain validates the event contract. It rejects
+whitespace-only required strings, missing execution or validation status,
+negative token counts, inconsistent token arithmetic, non-finite or negative
+estimated cost, negative attempt counts, and a zero occurrence time:
+
+```text
+total_tokens = input_tokens + output_tokens
+estimated_cost_usd is finite and >= 0
+attempts >= 0
+```
+
+The domain event intentionally has no JSON serialization tags. Wire encoding
+belongs to the infrastructure adapter, so the same domain fact can be sent
+through Kafka, Protobuf, or another transport without coupling the domain to
+one representation.
+
 ---
 
 # 23. Telemetry Publication Boundary
@@ -875,9 +964,28 @@ flowchart LR
 
 This preserves dependency direction.
 
-The hot completion path does not couple business-result latency to an external billing database.
+The application constructs and validates the event synchronously, then dispatches it through a best-effort asynchronous bridge:
 
-An asynchronous publisher can decouple response latency from downstream accounting, but best-effort asynchronous delivery is not equivalent to durable exactly-once accounting. Durable event delivery requires an infrastructure-level durability mechanism and reconciliation process.
+```text
+event construction / validation
+          ↓
+context.WithoutCancel(parent context)
+          ↓
+goroutine → UsagePublisher.PublishUsageEvent(...)
+          ↓
+publisher error intentionally discarded
+```
+
+The bridge has these guarantees and limits:
+
+- it never returns a publication error to the completion caller;
+- a missing publisher, event-ID failure, or event-validation failure drops the event;
+- caller cancellation and deadlines do not cancel the background publication, while context values remain available for tracing and scoping;
+- publication is not durable and may be lost if the process exits before the goroutine completes.
+
+The hot completion path therefore does not couple business-result latency to publisher I/O or an external billing database. This seam must eventually be replaced or backed by an outbox or durable Kafka producer when billing requires at-least-once delivery.
+
+Best-effort asynchronous delivery is not equivalent to durable at-least-once delivery or exactly-once accounting. Durable event delivery requires an infrastructure-level durability mechanism and reconciliation process.
 
 ---
 
@@ -1379,7 +1487,7 @@ The caller needs a typed AI result before it continues its workflow. gRPC provid
 
 ### Why Kafka for usage events?
 
-Usage and billing reconciliation do not need to block the completion response. Kafka provides an asynchronous event boundary that downstream billing can consume, retry, replay, and reconcile independently.
+Usage and billing reconciliation do not need to block the completion response. The current gateway exposes an application-owned `UsagePublisher` port and invokes it asynchronously so publisher I/O and errors do not extend or fail the user-facing request. A production Kafka implementation should provide durable acceptance, at-least-once delivery, replay, and reconciliation independently of the completion response; the current goroutine is only the minimal bridge to that future infrastructure.
 
 ### Why not write the billing ledger directly from the gateway hot path?
 
@@ -1884,7 +1992,7 @@ The design can be implemented incrementally without changing the bounded context
 4. Add Redis-backed tenant budgets and rate limiting with atomic operations.
 5. Add tenant-scoped semantic caching with explicit version compatibility and expiration policy.
 6. Add provider-scoped circuit breakers, bounded retry/backoff, and deterministic eligible fallback.
-7. Add asynchronous usage-event publication and billing reconciliation through Kafka.
+7. Replace the best-effort asynchronous usage-event bridge with durable outbox/Kafka publication and billing reconciliation, preserving the non-blocking completion contract.
 8. Complete W3C trace propagation, provider latency metrics, validation metrics, and privacy-safe logs.
 9. Add integration, resilience, load, security, and failure-injection tests.
 10. Promote immutable images through the existing Helm/GitOps environment strategy.

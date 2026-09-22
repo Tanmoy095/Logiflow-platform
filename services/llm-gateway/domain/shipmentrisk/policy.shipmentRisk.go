@@ -1,45 +1,30 @@
 package shipmentrisk
 
-import (
-	"fmt"
-	"math"
-	"strings"
-)
+import "fmt"
 
-// Policy contains only rules that express shipment-risk business truth.
-// Provider, transport and infrastructure concerns deliberately do not appear.
+// Policy is deliberately stateless.
+//
+// Keeping capability-specific policy in its own package means future
+// capabilities can introduce different business invariants without touching
+// the generic LLM Gateway domain.
 type Policy struct{}
 
-// Validate verifies the final candidate before the application is allowed to
-// expose it as a trusted business result. We reject invalid model output rather
-// than silently repairing it because silent repair hides model degradation.
+// Validate verifies that a candidate result is a legitimate shipment-risk
+// business result.
+//
+// It first delegates to the result's own Validate(), which covers all
+// intrinsic invariants. Anything added here in the future should be a rule
+// that needs context beyond the result itself — for example:
+//
+//   - "returned ShipmentID must match the one in the request command"
+//   - "confidence must be below X for tenants on the conservative tier"
+//   - "reasons must reference evidence IDs the tenant actually owns"
+//
+// Those rules require the application command (or tenant context), so they
+// stay in a layer that has access to it. This package only sees the result.
 func (Policy) Validate(result ShipmentRiskResult) error {
-	if strings.TrimSpace(result.ShipmentID) == "" {
-		return fmt.Errorf("shipment_id must not be empty")
+	if err := result.Validate(); err != nil {
+		return fmt.Errorf("shipment risk policy violation: %w", err)
 	}
-
-	switch result.Risk {
-	case RiskNoRisk, RiskMediumRisk, RiskHighRisk:
-		// Supported classification.
-	default:
-		return fmt.Errorf("invalid risk value: %q", result.Risk)
-	}
-
-	if math.IsNaN(result.Confidence) || math.IsInf(result.Confidence, 0) {
-		return fmt.Errorf("confidence must be a finite number")
-	}
-	if result.Confidence < 0 || result.Confidence > 1 {
-		return fmt.Errorf("confidence must be between 0 and 1")
-	}
-	if result.Risk == RiskHighRisk && len(result.Reasons) == 0 {
-		return fmt.Errorf("high_risk requires at least one reason")
-	}
-
-	for i, reason := range result.Reasons {
-		if strings.TrimSpace(reason) == "" {
-			return fmt.Errorf("reasons[%d] must not be empty", i)
-		}
-	}
-
 	return nil
 }
