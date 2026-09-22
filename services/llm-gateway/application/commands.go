@@ -40,6 +40,9 @@ func (c CompleteCommand) Validate() error {
 	if strings.TrimSpace(c.ContractVersion) == "" {
 		return fmt.Errorf("contract_version must not be empty")
 	}
+	if c.ContractVersion != CurrentContractVersion {
+		return fmt.Errorf("unsupported contract_version %q", c.ContractVersion)
+	}
 	if strings.TrimSpace(c.TenantID) == "" {
 		return fmt.Errorf("tenant_id must not be empty")
 	}
