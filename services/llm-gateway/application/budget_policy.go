@@ -106,7 +106,8 @@ func (p *BudgetPolicy) Admit(
 	if estimatedCost < 0 {
 		return BudgetReservation{}, fmt.Errorf("%w: estimated cost must not be negative", ErrBudgetDenied)
 	}
-
+	// The rate limiter is the first authoritative check. It is intentionally
+	// placed before the budget check to prevent unnecessary budget reservations.
 	decision, err := p.Limit.Allow(ctx, tenantID)
 
 	if err != nil {
@@ -119,14 +120,14 @@ func (p *BudgetPolicy) Admit(
 			decision.RetryAfter,
 		)
 	}
-
+	// The reservation is stored in the budget store for later reconciliation.
 	reservation := BudgetReservation{
 		TenantID:      tenantID,
 		RequestID:     requestID,
 		EstimatedCost: estimatedCost,
 		ExpiresAt:     p.Clock().Add(p.ReservationTTL),
 	}
-
+	// The reservation is stored in the budget store for later reconciliation.
 	if err := p.Budget.Reserve(ctx, reservation); err != nil {
 		return BudgetReservation{}, fmt.Errorf("%w: %v", ErrBudgetDependencyUnavailable, err)
 	}
